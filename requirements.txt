@@ -1,0 +1,6 @@
+mutagen>=1.47
+rarfile>=4.2
+PySide6-Essentials>=6.7
+
+# dev
+pytest>=8
