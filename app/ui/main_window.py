@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QPushButton, QSplitter, QTableView, QToolBar, QToolButton, QVBoxLayout,
                                QWidget)
 
+from .. import __version__
 from ..config import SETTINGS_FILE, load_folders, save_folders
 from ..core import m4b
 from ..core.models import BookType
@@ -55,7 +56,7 @@ STATE_FILTERS = [("All", "all"), ("Ready", "ready"), ("Check", "check"), ("Revie
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AudioBooks & EBook Sorter")
+        self.setWindowTitle(f"AudioBooks & EBook Sorter v{__version__}")
         self.folders = load_folders()
         self.processed = Processed(self.folders.state / "processed.txt")
         self._lookup: OnlineLookup | None = None
@@ -213,7 +214,7 @@ class MainWindow(QMainWindow):
 
     def _about(self) -> None:
         f = self.folders
-        QMessageBox.about(self, "About", "<b>AudioBooks &amp; EBook Sorter</b><br>by Farathim<br><br>"
+        QMessageBox.about(self, "About", f"<b>AudioBooks &amp; EBook Sorter</b> v{__version__}<br>by Farathim<br><br>"
                           "Sorts audiobooks, ebooks, manga and light novels into an Audiobookshelf-friendly "
                           "layout. Incoming is only copied from; protected folders are never written to.<br><br>"
                           f"Settings: {SETTINGS_FILE}<br>App data: {f.state}<br>"
@@ -445,6 +446,52 @@ class MainWindow(QMainWindow):
 
         self._run(find, confirm, "Checking MangaDex and the wikis…")
 
+    def play_test_library(self) -> None:
+        if not self._have_ffmpeg():
+            return
+        from ..core.library import audio_files_under, play_test_library  # noqa: PLC0415
+        f = self.folders
+        roots = [f.audio_sorted, *([f.swedish_sorted] if f.swedish_sorted else [])]
+        files = audio_files_under(roots)
+        if not files:
+            QMessageBox.information(self, "Play test", "No audio files in the sorted audiobook folders.")
+            return
+        box = QMessageBox(QMessageBox.Question, "Play-test sorted audiobooks",
+                          f"{len(files)} audio files in:\n" + "\n".join(str(r) for r in roots if r.is_dir())
+                          + "\n\nQuick plays 20 s at the start, middle and end of each file (about 1 s per file).\n"
+                          "Full plays every file to the end (about 20 s per long book).\n\n"
+                          "Only reads - nothing is changed.", parent=self)
+        b_quick = box.addButton("Quick", QMessageBox.AcceptRole)
+        b_full = box.addButton("Full", QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() not in (b_quick, b_full):
+            return
+        full = box.clickedButton() is b_full
+
+        def work(w: Worker):
+            return play_test_library(files, full, on_progress=w.report, cancelled=w.cancelled)
+
+        def finished(result):
+            tested, bad = result
+            if not bad:
+                QMessageBox.information(self, "Play test", f"All {tested} files play fine"
+                                        + (" (whole files)." if full else " (start, middle and end).")
+                                        + ("" if tested == len(files) else f"\nStopped after {tested} of {len(files)}."))
+                return
+            from datetime import datetime  # noqa: PLC0415
+            report = f.state / "logs" / f"play-test-{datetime.now():%Y%m%d-%H%M%S}.txt"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("\n".join(f"{p}\n    {why}" for p, why in bad) + "\n", encoding="utf-8")
+            lines = "\n".join(f"• {p.name}: {why}" for p, why in bad[:20])
+            more = f"\n…and {len(bad) - 20} more" if len(bad) > 20 else ""
+            if QMessageBox.warning(self, "Play test", f"{len(bad)} of {tested} files don't play right:\n\n{lines}{more}"
+                                   f"\n\nThe full list is in {report}.\nOpen it?",
+                                   QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+                os.startfile(str(report))
+
+        self._run(work, finished, f"Play-testing {len(files)} files ({'full' if full else 'quick'})…")
+
     def fix_xhe(self) -> None:
         if not self._have_ffmpeg():
             return
@@ -626,6 +673,8 @@ class MainWindow(QMainWindow):
                  "Check covers…", self.improve_covers),
                 ("Update sorted manga", "Official English volume covers and volume titles (MangaDex, Fandom).",
                  "Update…", self.refresh_manga),
+                ("Play-test sorted audiobooks", "Play every sorted audiobook file through ffmpeg and list the "
+                 "ones that are broken or cut off. Only reads - nothing is changed.", "Test…", self.play_test_library),
                 ("Convert a sorted audiobook to M4B", "One chaptered .m4b from a sorted multi-file audiobook.",
                  "Convert…", self.m4b_in_library),
                 ("Split the Books library", "Sort a Books folder into Manga / Light Novels / EBooks / Comics.",
@@ -845,7 +894,8 @@ class MainWindow(QMainWindow):
         self.cb_keep_done.setToolTip(
             ("Lit: Move keeps the old copies (when M4B → M4B / MP3 → M4B made a new file) and leftover\n"
              "cover/metadata files in the Done folder - a safety net you empty yourself.\n"
-             "Off: they are removed after sorting - Recycle Bin, or DELETED FOR GOOD on a drive without one.")
+             "Off: they are removed after sorting - Recycle Bin, or DELETED FOR GOOD on a drive without one.\n"
+             "An old audio copy only once its new file passed a FULL play test - else it stays in Done.")
             + ("" if move else "\n(Only for Move - Copy never touches the originals.)"))
 
     def _keep_done_toggled(self, on: bool) -> None:
@@ -1218,6 +1268,7 @@ def run() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = QApplication(sys.argv)
     app.setApplicationName("AudioBooks & EBook Sorter")
+    app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
     theme.apply(load_folders().theme, app)
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))  # inside the .exe, or the project

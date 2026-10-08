@@ -131,6 +131,37 @@ def find_xhe_aac(root: Path) -> list[Path]:
     return [p for p in sorted(root.rglob("*")) if p.suffix.lower() in (".m4b", ".m4a") and m4b.is_xhe_aac(p)]
 
 
+PLAYABLE_EXTS = {".m4b", ".m4a", ".mp3", ".flac", ".ogg", ".opus", ".aac", ".wma", ".wav"}
+
+
+def audio_files_under(roots: list[Path]) -> list[Path]:
+    seen: dict[str, Path] = {}
+    for root in roots:
+        if root and root.is_dir():
+            for p in root.rglob("*"):
+                if p.suffix.lower() in PLAYABLE_EXTS and p.is_file():
+                    seen.setdefault(str(p).lower(), p)
+    return sorted(seen.values())
+
+
+def play_test_library(files: list[Path], full: bool = False,
+                      on_progress: Callable[[int, int, str], None] | None = None,
+                      cancelled: Callable[[], bool] = lambda: False) -> tuple[int, list[tuple[Path, str]]]:
+    """Read-only: play every file through ffmpeg (m4b.play_test). (files tested, [(file, problem)])."""
+    bad: list[tuple[Path, str]] = []
+    done = 0
+    for i, f in enumerate(files, 1):
+        if cancelled():
+            break
+        if on_progress:
+            on_progress(i, len(files), f.name)
+        problem = m4b.play_test(f, full=full, cancelled=cancelled)
+        done += 1
+        if problem:
+            bad.append((f, problem))
+    return done, bad
+
+
 def remove_empty_dirs(top: Path) -> None:
     for d in sorted((p for p in top.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
         try:

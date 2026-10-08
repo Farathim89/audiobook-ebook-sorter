@@ -55,6 +55,7 @@ class Folders:
     # xHE-AAC -> plain AAC (ABS can't play xHE). Decoded by Windows' own xHE decoder - ffmpeg loses ~24%
     # of the packets (dropouts) - so on other systems the conversion is refused instead.
     fix_xhe_aac: bool = True
+    play_test: str = "full"  # new/edited audio files are play-tested: "full" (whole file), "quick" (3 spots), "off"
     auto_minutes: int = 0    # watch mode: scan + sort sure books every N minutes (0 = off)
     split_audio: bool = True        # AudioBooks Sorted\Light Novels, \Audiobooks
     audio_ln_dir: str = "Light Novels"

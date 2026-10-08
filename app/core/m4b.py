@@ -161,6 +161,60 @@ def chapters_are_good(existing: list[Chapter], audible: list[Chapter] | None = N
     return named >= 0.8 * len(existing)
 
 
+PLAY_SECONDS = 20  # quick play test: this much audio at the start, middle and end
+
+
+def _hms(seconds: float) -> str:
+    s = int(round(seconds))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}"
+
+
+def play_test(path: Path, expected: float | None = None, full: bool = False,
+              cancelled: Callable[[], bool] = lambda: False) -> str:
+    """'' when the file plays, else what is wrong. Checks there is an audio stream, that its length
+    matches `expected` (1 %, at least 2 s), and decodes it: 20 s at the start, middle and end - or all
+    of it with full=True. Without ffmpeg/ffprobe nothing can be checked ('')."""
+    exe, probe = ffmpeg(), find_tool("ffprobe")
+    if not exe or not probe:
+        return ""
+    out = subprocess.run([probe, "-v", "error", "-select_streams", "a:0", "-show_entries",
+                          "stream=codec_name:format=duration", "-of", "json", str(path)],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
+    try:
+        data = json.loads(out.stdout or "{}")
+    except ValueError:
+        data = {}
+    if not data.get("streams"):
+        return "no audio stream" + (f" ({out.stderr.strip().splitlines()[0][:120]})" if out.stderr.strip() else "")
+    length = float((data.get("format") or {}).get("duration") or 0)
+    if length <= 0:
+        return "the file has no length"
+    if expected and abs(length - expected) > max(2.0, expected * 0.01):
+        return f"it is {_hms(length)} long instead of {_hms(expected)}"
+    spots = [None] if full else sorted({0.0, max(0.0, length / 2 - PLAY_SECONDS / 2),
+                                        max(0.0, length - PLAY_SECONDS - 1)})
+    for start in spots:
+        if cancelled():
+            return ""
+        cmd = [exe, "-hide_banner", "-nostdin", "-v", "error"]
+        cmd += [] if start is None else ["-ss", f"{start:.2f}"]
+        cmd += ["-i", str(path)] + ([] if start is None else ["-t", str(PLAY_SECONDS)])
+        cmd += ["-map", "0:a:0", "-f", "null", "-progress", "pipe:1", "-nostats", "-"]
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=_NO_WINDOW)
+        err = r.stderr.strip()
+        where = "" if start is None else f" at {_hms(start)}"
+        if r.returncode != 0 or err:
+            return f"decode error{where}: {err.splitlines()[0][:150] if err else 'ffmpeg failed'}"
+        # a cut-off file decodes 'fine' - just nothing past its end: the audio itself must be there
+        played = max((int(v) for k, v in (ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+                      if k == "out_time_us" and v.strip().lstrip("-").isdigit()), default=0) / 1e6
+        want = length if start is None else min(PLAY_SECONDS, length - start)
+        if played < want * 0.95 - 1:
+            return f"audio stops early{where}: {_hms(played)} played of {_hms(want)}"
+    return ""
+
+
 def chapters_from_audible(http: Http, asin: str, total: float) -> list[Chapter] | None:
     """Audible's chapter list, stretched to our exact length, if the runtimes agree."""
     found = audible_chapters(http, asin)

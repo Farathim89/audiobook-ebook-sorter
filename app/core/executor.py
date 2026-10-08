@@ -91,6 +91,8 @@ class Executor:
 
     def _book(self, book: Book, plan: Plan, moves: list[Move], journal: Journal) -> BookResult:
         self._title = book.meta.title or book.main_file.stem
+        self._notes: list[str] = []  # play-test problems etc., shown with the result
+        self._full_ok: bool | None = None  # True: every new file of this book passed a FULL play test
         if problems := plan.problems.get(book):
             return BookResult(book, "skipped", "; ".join(problems))
         if book.status is Status.UNKNOWN:
@@ -111,8 +113,12 @@ class Executor:
                     self._step("re-encoding xHE-AAC -> AAC (slow)")
                     fixed = m4b_file.with_name(m4b_file.stem + ".aac-lc" + m4b_file.suffix)
                     m4b.reencode_aac(m4b_file, fixed, self._cancelled)
-                    os.replace(fixed, m4b_file)
-                    journal.write(op="update", dst=str(m4b_file), size=m4b_file.stat().st_size)
+                    if problem := self._play_test(fixed, m4b.duration(m4b_file)):
+                        os.remove(fixed)
+                        self._notes.append(f"the xHE-AAC fix failed the play test ({problem}) - kept as xHE-AAC")
+                    else:
+                        os.replace(fixed, m4b_file)
+                        journal.write(op="update", dst=str(m4b_file), size=m4b_file.stat().st_size)
             for mv in moves:
                 if mv.in_place:
                     continue
@@ -122,7 +128,13 @@ class Executor:
                     self._ensure_dir(mv.dst.parent, journal)
                     m4b.reencode_aac(mv.src, mv.dst, self._cancelled)
                     journal.write(op="create", dst=str(mv.dst), size=mv.dst.stat().st_size)
-                    replaced.add(mv.src)
+                    if problem := self._play_test(mv.dst, m4b.duration(mv.src)):
+                        os.remove(mv.dst)
+                        self._notes.append(f"the xHE-AAC fix of {mv.src.name} failed the play test ({problem}) "
+                                           "- sorted the original as it is")
+                        self._transfer(mv.src, mv.dst, journal)
+                    else:
+                        replaced.add(mv.src)
                 else:
                     self._step(f"{self._verb(mv.src, mv.dst)} {mv.src.name} ({_size(mv.src)})")
                     self._transfer(mv.src, mv.dst, journal)
@@ -154,10 +166,22 @@ class Executor:
                     if path.stem == "cover" and book.type is BookType.AUDIO:
                         self._step("putting the cover inside the audio file")
                         self._embed_cover(book, moves, m4b_file, content, journal)
+                edited = [m4b_file] if m4b_file else [mv.dst for mv in moves if not mv.in_place]
+                edited = [f for f in edited if f and f.suffix.lower() in (".m4b", ".m4a", ".mp3", ".flac", ".ogg")]
+                if len(edited) <= 5 and (self.folders.write_tags or m4b_file):
+                    for f in edited:
+                        if problem := self._play_test(f):
+                            if f == m4b_file:  # our own file: the originals are still in Incoming - keep them
+                                os.remove(f)
+                                raise OSError(f"the new m4b failed the play test after tags/cover ({problem}) - "
+                                              "removed it; the original is still in Incoming")
+                            self._notes.append(f"{f.name} failed the play test after tags/cover: {problem}")
                 if self.mode == "move":
                     self._step("moving the originals' leftovers to Done")
                     self._tidy_source(book, journal, replaced)
             self.processed.add(book)
+            if self._notes:
+                detail += " - " + "; ".join(self._notes)
             return BookResult(book, status, detail)
         except OSError as e:
             log.error("failed on %s: %s", book.main_file, e)
@@ -218,7 +242,24 @@ class Executor:
             self._step("adding the cover to the new m4b")
             m4b.add_cover(out, image)
             journal.write(op="update", dst=str(out), size=out.stat().st_size)
+        if problem := self._play_test(out, total):
+            # never trade a good original for a broken copy: drop ours, the original is sorted as it is
+            os.remove(out)
+            self._notes.append(f"the new m4b failed the play test ({problem}) - sorted the original as it is")
+            log.warning("%s: new m4b failed the play test: %s", title, problem)
+            return None, "", set()
         return out, source, set(files)
+
+    def _play_test(self, path: Path, expected: float | None = None) -> str:
+        """'' when the file plays (or testing is off), else what is wrong with it."""
+        how = self.folders.play_test
+        if how == "off" or not path.is_file():
+            return ""
+        self._step(f"play-testing {path.name} ({'whole file' if how == 'full' else 'start, middle, end'})")
+        problem = m4b.play_test(path, expected or None, full=how == "full", cancelled=self._cancelled)
+        if how == "full" and not self._cancelled():
+            self._full_ok = not problem and self._full_ok is not False
+        return problem
 
     def _verb(self, src: Path, dst: Path) -> str:
         if self.mode != "move":
@@ -266,20 +307,26 @@ class Executor:
         emptied folders are removed - nothing is deleted."""
         folder = book.folder or book.main_file.parent
         dest = done_dir(self.folders.done) / book.source_root.name
+        # an old copy only goes for good when its new file passed a FULL play test - else it stays in Done
+        may_remove = self._full_ok is True
+        if replaced and not self.folders.keep_done and not may_remove:
+            self._notes.append("old copy kept in Done - the new file had no full play test"
+                               if self.folders.play_test != "full" else "old copy kept in Done")
         for f in sorted(replaced):
             if f.is_file():
                 rel = f.relative_to(book.source_root) if book.source_root in f.parents else Path(f.name)
-                self._to_done(f, dest / rel, journal)
+                self._to_done(f, dest / rel, journal, may_remove)
         for f in leftovers(folder, book.source_root):
             self._to_done(f, dest / f.relative_to(book.source_root), journal)
         if folder != book.source_root and folder.is_dir():
             remove_empty_dirs(folder)
         drop_empty_parents(folder.parent, book.source_root)
 
-    def _to_done(self, src: Path, dst: Path, journal: Journal) -> None:
+    def _to_done(self, src: Path, dst: Path, journal: Journal, may_remove: bool = True) -> None:
         """Into the Done folder - or, with 'Keep old copies in Done' off, away: the Recycle Bin when the
-        drive has one, else deleted for good. (Only called after the sorted book is complete.)"""
-        if self.folders.keep_done:
+        drive has one, else deleted for good. (Only called after the sorted book is complete; an old
+        audio copy only with may_remove = its new file passed a full play test.)"""
+        if self.folders.keep_done or not may_remove:
             self._transfer(src, dst, journal)
             return
         size = src.stat().st_size

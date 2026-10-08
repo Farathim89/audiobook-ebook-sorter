@@ -235,6 +235,13 @@ class SettingsDialog(QDialog):
                                   "Keep audio - only Audible's chapter names, the sound is copied as it is (fast)\n"
                                   "Re-encode AAC - new AAC audio at the same bitrate (slow), plus Audible's chapters")
         form.addRow("M4B → M4B", self.m4b_codec)
+        self.play_test = SegmentedSwitch(["Off", "Quick", "Full"])
+        self.play_test.setCurrentIndex({"off": 0, "quick": 1}.get(folders.play_test, 2))
+        self.play_test.setToolTip("Every audio file the app makes or changes (M4B → M4B, MP3 → M4B, xHE fix, tags,\n"
+                                  "cover) is played through with ffmpeg before the original leaves Incoming.\n"
+                                  "Quick: 20 s at the start, middle and end. Full: the whole file (~20 s per book).\n"
+                                  "A new file that fails is removed and the original is sorted as it is.")
+        form.addRow("Play test", self.play_test)
         self.move_originals = QCheckBox("Move originals out of Incoming")
         self.move_originals.setChecked(folders.move_originals)
         self.move_originals.setToolTip("Else copy and keep them. Leftover cover/metadata files go to the Done "
@@ -246,7 +253,9 @@ class SettingsDialog(QDialog):
         self.keep_done.setToolTip("Move mode: the old copy of a book that got a new file (M4B → M4B, MP3 → M4B, "
                                   "xHE fix)\nand its leftover cover/metadata files go to the Done folder - a safety "
                                   "net you empty yourself.\nOff: they go to the Recycle Bin, or are DELETED FOR GOOD "
-                                  "when the drive has no Recycle Bin.\nThe sorted book is always complete first.")
+                                  "when the drive has no Recycle Bin.\nAn old audio copy only once its new file "
+                                  "passed a FULL play test - else it stays in Done.\n"
+                                  "The sorted book is always complete first.")
         form.addRow("", self.keep_done)
         self.done_days = QSpinBox()
         self.done_days.setRange(0, 3650)
@@ -443,6 +452,7 @@ class SettingsDialog(QDialog):
         self.folders.write_tags = self.write_tags.isChecked()
         self.folders.fix_xhe_aac = self.fix_xhe.isChecked()
         self.folders.m4b_codec = "aac" if self.m4b_codec.currentIndex() == 1 else "copy"
+        self.folders.play_test = ("off", "quick", "full")[self.play_test.currentIndex()]
         self.folders.auto_minutes = self.auto.value()
         self.folders.auto_move_duplicates = self.auto_dupes.isChecked()
         self.folders.move_originals = self.move_originals.isChecked()

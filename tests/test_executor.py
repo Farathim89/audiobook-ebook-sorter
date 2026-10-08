@@ -230,3 +230,60 @@ def test_m4b_to_m4b_leaves_good_chapters_alone(tmp_path, monkeypatch):
     Executor(folders, mode="move", redo_m4b=True).run(Planner(folders).plan(books))
     assert calls == [] and next((tmp_path / "out").rglob("*.m4b")).read_bytes() == b"original"
     assert not (tmp_path / "done").exists()                               # just moved: no old copy
+
+
+def test_a_new_m4b_that_fails_the_play_test_is_dropped_and_the_original_sorted(tmp_path, monkeypatch):
+    from app.core import m4b
+    folders, books, calls = _one_m4b_book(tmp_path, monkeypatch)
+    monkeypatch.setattr(m4b, "chapters_in", lambda p: [])
+    monkeypatch.setattr(m4b, "play_test", lambda path, *a, **kw: "decode error" if path.read_bytes() == b"new" else "")
+    result = Executor(folders, mode="move", redo_m4b=True).run(Planner(folders).plan(books))
+    r = result.results[0]
+    assert r.status == "done" and "failed the play test" in r.detail
+    assert next((tmp_path / "out").rglob("*.m4b")).read_bytes() == b"original"   # the original, as it is
+    assert not (tmp_path / "done").exists()                                       # nothing replaced
+
+
+def test_play_test_finds_a_cut_off_file(tmp_path):
+    import pytest as _pytest
+    from app.core import m4b
+    if not m4b.ffmpeg() or not m4b.find_tool("ffprobe"):
+        _pytest.skip("no ffmpeg")
+    import subprocess
+    good = tmp_path / "good.m4b"
+    subprocess.run([m4b.ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=120",
+                    "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", str(good)], check=True)
+    assert m4b.play_test(good, 120) == "" and m4b.play_test(good, full=True) == ""
+    assert "long instead of" in m4b.play_test(good, 300)
+    cut = tmp_path / "cut.m4b"
+    cut.write_bytes(good.read_bytes()[: good.stat().st_size // 2])
+    assert m4b.play_test(cut) and m4b.play_test(cut, full=True)
+
+
+test_play_test_finds_a_cut_off_file = __import__("pytest").mark.real_play_test(test_play_test_finds_a_cut_off_file)
+
+
+def test_play_test_library_lists_the_broken_files(tmp_path, monkeypatch):
+    from app.core import m4b
+    from app.core.library import audio_files_under, play_test_library
+    for rel in ("A/1/a.m4b", "A/2/b.mp3", "A/2/cover.jpg", "B/c.m4b"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_bytes(b"x")
+    files = audio_files_under([tmp_path / "A", tmp_path / "B", tmp_path / "missing"])
+    assert [f.name for f in files] == ["a.m4b", "b.mp3", "c.m4b"]
+    monkeypatch.setattr(m4b, "play_test", lambda f, **kw: "audio stops early" if f.name == "b.mp3" else "")
+    tested, bad = play_test_library(files)
+    assert tested == 3 and [(f.name, why) for f, why in bad] == [("b.mp3", "audio stops early")]
+
+
+def test_old_copy_is_only_removed_after_a_full_play_test(tmp_path, monkeypatch):
+    import app.core.executor as ex
+    removed: list = []
+    monkeypatch.setattr(ex, "recycle_bin_on", lambda p: True)
+    monkeypatch.setattr(ex, "to_recycle_bin", lambda p: (removed.append(p.name), p.unlink()))
+    folders, books, calls = _one_m4b_book(tmp_path, monkeypatch)
+    folders.keep_done, folders.play_test = False, "quick"
+    result = Executor(folders, mode="move", redo_m4b=True).run(Planner(folders).plan(books))
+    assert removed == []                                                     # quick only: not trusted enough
+    assert next((tmp_path / "done").rglob("Some Book.m4b")).read_bytes() == b"original"
+    assert "old copy kept in Done" in result.results[0].detail

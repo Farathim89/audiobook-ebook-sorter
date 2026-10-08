@@ -36,3 +36,9 @@ def test_portable_paths_are_saved_relative_and_read_back(tmp_path, monkeypatch):
     saved = json.loads((data / "settings.json").read_text(encoding="utf-8"))
     assert saved["state"] == "state" and saved["audio_sorted"] == str(tmp_path / "Sorted")
     assert cfg.load_folders(data / "settings.json").state == data / "state"
+
+
+def test_version_is_set():
+    import re
+    from app import __version__
+    assert re.fullmatch(r"\d+\.\d+\.\d+", __version__)

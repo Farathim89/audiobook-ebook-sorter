@@ -80,6 +80,9 @@ chaptered .m4b while sorting. Books that already are one .m4b are left alone.</l
 <b>Settings &gt; Sorting &gt; M4B &rarr; M4B</b> picks how: <i>Keep audio</i> (fast, the sound is copied as it
 is) or <i>Re-encode AAC</i> (new AAC audio at the same bitrate - slow). In Move mode the original goes to the
 Done folder.</li>
+<li><b>Play test</b> (Settings &gt; Sorting): every audio file the app makes or changes is played through with ffmpeg
+before the original leaves Incoming - <i>Full</i> (the whole file, about 20 s per book) or <i>Quick</i> (start,
+middle, end). A new file that fails is removed and the original is sorted as it is; the result says why.</li>
 <li><b>Edit &gt; Mark selected as already sorted</b> (Ctrl+M): hide books your library already has.</li>
 </ul>
 <h3>Portable</h3>
