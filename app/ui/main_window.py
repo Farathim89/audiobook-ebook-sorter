@@ -41,7 +41,7 @@ from ..core.compare import HAVE, HAVE_NOT, apply_compare, libraries_of, plan_com
 from ..providers.abs import AbsClient
 from .dialogs import DuplicateDialog, EditSortedDialog, HistoryDialog, SettingsDialog
 from .help import HelpDialog
-from ..portable import ui_settings
+from ..portable import PORTABLE, ui_settings
 from .sidebar import Sidebar, tool_card
 from . import theme
 from .workers import Worker
@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
                         "(sure match, no problems). Everything else waits for you.", checkable=True)
         self.a_auto.toggled.connect(self._toggle_auto)
         self.a_m4b = A("MP3 → M4B while sorting", None, None, None, checkable=True)
+        self.a_redo_m4b = A("M4B → M4B while sorting (Audible chapters / re-encode)", None, None, None, checkable=True)
 
         mb = self.menuBar()
         m = mb.addMenu("&File")
@@ -116,9 +117,6 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_history)
 
         m = mb.addMenu("&View")
-        self.a_show_sorted = A("Show &sorted books", None, None, None, checkable=True)
-        self.a_show_sorted.toggled.connect(lambda on: self.proxy.set_filter(show_sorted=on))
-        m.addAction(self.a_show_sorted)
         self.a_details = A("&Details panel", None, "Ctrl+D", None, checkable=True)
         self.a_details.setChecked(True)
         m.addAction(self.a_details)
@@ -136,6 +134,7 @@ class MainWindow(QMainWindow):
 
         m = mb.addMenu("&Tools")
         m.addAction(self.a_m4b)
+        m.addAction(self.a_redo_m4b)
         m.addAction(self.a_auto)
         m.addSeparator()
         m.addAction(A("Convert selected audiobooks to M4B (no sorting)…", lambda: self.convert_only(self._selected_books())))
@@ -171,14 +170,27 @@ class MainWindow(QMainWindow):
         self.mode.setCurrentIndex(1 if self.folders.move_originals else 0)
         self.mode.currentIndexChanged.connect(self._mode_changed)
         self.cb_m4b = sb.cb_m4b
-        self.cb_m4b.setToolTip("While sorting: audiobooks made of several files become one .m4b with chapters\n"
-                               "(Audible chapter names when they match, else cleaned-up file names).\n"
-                               "Single .m4b files get Audible's chapter names. Originals are always kept.")
+        self.cb_m4b.setToolTip("While sorting: audiobooks made of several files (mp3 ...) become one .m4b with\n"
+                               "chapters (Audible chapter names when they match, else cleaned-up file names).\n"
+                               "Books that already are one .m4b are left alone - that's M4B → M4B.\n"
+                               "Move mode: the original files go to the Done folder.")
         self.cb_m4b.setChecked(self.folders.to_m4b)
         self.a_m4b.setChecked(self.folders.to_m4b)
         self.cb_m4b.toggled.connect(self._m4b_toggled)
         self.cb_m4b.toggled.connect(self.a_m4b.setChecked)
         self.a_m4b.toggled.connect(self.cb_m4b.setChecked)
+        self.cb_keep_done = sb.cb_keep_done
+        self.cb_keep_done.setChecked(self.folders.keep_done)
+        self.cb_keep_done.toggled.connect(self._keep_done_toggled)
+        self._keep_done_state()
+        self.mode.currentIndexChanged.connect(lambda _i: self._keep_done_state())
+        self.cb_redo_m4b = sb.cb_redo_m4b
+        self._redo_m4b_tip()
+        self.cb_redo_m4b.setChecked(self.folders.redo_m4b)
+        self.a_redo_m4b.setChecked(self.folders.redo_m4b)
+        self.cb_redo_m4b.toggled.connect(self._redo_m4b_toggled)
+        self.cb_redo_m4b.toggled.connect(self.a_redo_m4b.setChecked)
+        self.a_redo_m4b.toggled.connect(self.cb_redo_m4b.setChecked)
         self.b_sort = sb.b_sort
         self.b_sort.clicked.connect(self.sort_books)
 
@@ -204,17 +216,19 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, "About", "<b>AudioBooks &amp; EBook Sorter</b><br>by Farathim<br><br>"
                           "Sorts audiobooks, ebooks, manga and light novels into an Audiobookshelf-friendly "
                           "layout. Incoming is only copied from; protected folders are never written to.<br><br>"
-                          f"Settings: {SETTINGS_FILE}<br>App data: {f.state}")
+                          f"Settings: {SETTINGS_FILE}<br>App data: {f.state}<br>"
+                          + ("<b>Portable mode</b> - everything is kept in the BookSorter-data folder next to the app."
+                             if PORTABLE is not None else
+                             "Portable mode: put a BookSorter-data folder next to BookSorter.exe."))
 
     def _restore_filters(self) -> None:
-        """The search text, state filter and View > Show sorted books from last time."""
+        """The search text and state filter from last time."""
         saved = ui_settings()
         self.search.setText(str(saved.value("view/search", "") or ""))
         state = str(saved.value("view/state", "all") or "all")
         keys = [k for _, k in STATE_FILTERS]
         if state in keys:
             self.state_filter.setCurrentIndex(keys.index(state))
-        self.a_show_sorted.setChecked(str(saved.value("view/show_sorted", "false")).lower() == "true")
 
     def _fit_to_screen(self) -> None:
         """Restore the last window size, or fit the screen (the old fixed 1500x860 was too tall on scaled displays)."""
@@ -673,6 +687,23 @@ class MainWindow(QMainWindow):
         self.b_cancel = QPushButton("Cancel")
         self.b_cancel.clicked.connect(lambda: self._worker and self._worker.cancel())
         sb.addPermanentWidget(self.b_cancel)
+        # how much the Done folder holds (old copies, leftovers): a reminder to empty it - a click opens it
+        self.b_done = QPushButton()
+        self.b_done.setFlat(True)
+        self.b_done.setCursor(Qt.PointingHandCursor)
+        self.b_done.clicked.connect(lambda: self.folders.done.is_dir() and os.startfile(str(self.folders.done)))
+        sb.addPermanentWidget(self.b_done)
+        self._update_done_size()
+
+    def _update_done_size(self) -> None:
+        from ..core.leftovers import folder_size, human_size  # noqa: PLC0415
+        size, files = folder_size(self.folders.done)
+        self.b_done.setVisible(files > 0)
+        self.b_done.setText(f"📦 Done: {human_size(size)}")
+        self.b_done.setToolTip(f"{files} files in {self.folders.done}\n"
+                               "Originals of moved books (old copies when M4B → M4B / MP3 → M4B made a new file)\n"
+                               "and their leftover cover/metadata files. Check your sorted books, then empty it "
+                               "yourself.\nClick to open the folder.")
 
     # -- helpers -----------------------------------------------------------
     @property
@@ -692,7 +723,9 @@ class MainWindow(QMainWindow):
     def _on_progress(self, i: int, n: int, text: str) -> None:
         self.progress.setMaximum(max(n, 1))
         self.progress.setValue(i)
-        self.progress_text.setText(f"{i}/{n}  {text[:60]}")
+        line = f"{i}/{n}  {text}"
+        self.progress_text.setText(line if len(line) <= 90 else line[:89] + "…")
+        self.progress_text.setToolTip(line)
 
     def _on_failed(self, err: str) -> None:
         self._set_busy(False)
@@ -718,6 +751,7 @@ class MainWindow(QMainWindow):
             self.counts.setText(label)
         else:
             self._update_counts()
+            self._update_done_size()
 
     def _update_counts(self) -> None:
         books = self.model.books
@@ -729,7 +763,7 @@ class MainWindow(QMainWindow):
         states = Counter(self.model.state(b) for b in books)
         parts = [f"{len(books)} books"] + [f"{states[k]} {k}" for _, k in STATE_FILTERS[1:] if states[k]]
         self.counts.setText("  ·  ".join(parts) + f"  ·  {len(self.model.checked)} ticked")
-        self.sidebar.set_counts(states, len(books))
+        self.sidebar.set_counts(states, len(books) - states["sorted"])  # All = what All shows (not the sorted ones)
         self.sidebar.set_sort_count(len(self.model.checked))
 
     def _selected_books(self) -> list[Book]:
@@ -761,7 +795,7 @@ class MainWindow(QMainWindow):
 
     def _state_filter_changed(self, i: int) -> None:
         state = STATE_FILTERS[i][1]
-        self.proxy.set_filter(state=state, show_sorted=True if state == "sorted" else None)
+        self.proxy.set_filter(state=state)
 
     def _tick_visible(self, on: bool | None) -> None:
         books = self._visible_books()
@@ -804,6 +838,50 @@ class MainWindow(QMainWindow):
         if target and target.exists():
             menu.addAction("Open target folder", lambda: os.startfile(str(target)))
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _keep_done_state(self) -> None:
+        move = self.mode.currentIndex() == 1
+        self.cb_keep_done.setEnabled(move)
+        self.cb_keep_done.setToolTip(
+            ("Lit: Move keeps the old copies (when M4B → M4B / MP3 → M4B made a new file) and leftover\n"
+             "cover/metadata files in the Done folder - a safety net you empty yourself.\n"
+             "Off: they are removed after sorting - Recycle Bin, or DELETED FOR GOOD on a drive without one.")
+            + ("" if move else "\n(Only for Move - Copy never touches the originals.)"))
+
+    def _keep_done_toggled(self, on: bool) -> None:
+        if not on:
+            from ..core.leftovers import recycle_bin_on  # noqa: PLC0415
+            try:
+                no_bin = not recycle_bin_on(self.folders.audio_incoming)
+            except OSError:
+                no_bin = False
+            if no_bin and QMessageBox.warning(
+                    self, "Don't keep old copies?",
+                    f"Drive {self.folders.audio_incoming.drive} has no Recycle Bin.\n\nWith this off, the old copies "
+                    "and leftover files of books you sort with Move are DELETED FOR GOOD (after the sorted book "
+                    "is complete). Undo can't bring them back.\n\nSwitch it off?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                self.cb_keep_done.blockSignals(True)
+                self.cb_keep_done.setChecked(True)
+                self.cb_keep_done.blockSignals(False)
+                return
+        self.folders.keep_done = on
+        save_folders(self.folders)
+
+    def _redo_m4b_tip(self) -> None:
+        how = ("re-encoded to AAC (same bitrate, slow), with Audible's chapter names when they match"
+               if self.folders.m4b_codec == "aac" else
+               "given Audible's chapter names - the audio is kept as it is (fast, no quality loss)")
+        self.cb_redo_m4b.setToolTip("While sorting: books that already are ONE .m4b are " + how + ".\n"
+                                    "Change the codec in Settings > Sorting. Move mode: the original goes to "
+                                    "the Done folder.")
+
+    def _redo_m4b_toggled(self, on: bool) -> None:
+        if on and not self._have_ffmpeg():
+            self.cb_redo_m4b.setChecked(False)
+            return
+        self.folders.redo_m4b = on
+        save_folders(self.folders)
 
     def _m4b_toggled(self, on: bool) -> None:
         if on and not self._have_ffmpeg():
@@ -849,7 +927,7 @@ class MainWindow(QMainWindow):
         self.model.done |= set(new)
         self.model.checked -= set(new)
         self.statusBar().showMessage(f"{len(new)} book(s) are already in the library (identical files) - "
-                                     "marked as sorted. View > Show sorted books to see them.", 20000)
+                                     "marked as sorted. Click Sorted in the sidebar to see them.", 20000)
         return True
 
     def mark_sorted(self, books: list[Book], on: bool) -> None:
@@ -993,11 +1071,15 @@ class MainWindow(QMainWindow):
                 + (f" and {n_review} to Review" if n_review else "") + "?\n\n"
                 + f"Audiobooks → {self.folders.audio_sorted}\nBooks → {self.folders.books_sorted}\n\n"
                 + ("Originals stay where they are." if mode == "copy"
-                   else f"Originals are MOVED; their leftover cover/metadata files go to {self.folders.done}.")
+                   else f"Originals are MOVED; old copies and leftover cover/metadata files go to {self.folders.done}."
+                   if self.folders.keep_done else
+                   "Originals are MOVED; old copies and leftover cover/metadata files are REMOVED "
+                   "(Recycle Bin, or deleted for good on a drive without one - Settings > Keep old copies in Done).")
                 + " Existing files are never overwritten, and the run can be undone from History.")
         if QMessageBox.question(self, "Sort", text) != QMessageBox.Yes:
             return
         to_m4b = self.cb_m4b.isChecked()
+        redo_m4b = self.cb_redo_m4b.isChecked()
 
         def work(w: Worker):
             pos = [0, len(chosen)]
@@ -1006,7 +1088,7 @@ class MainWindow(QMainWindow):
                 pos[0] = i
                 w.report(i, n, b.meta.title or "")
 
-            executor = Executor(self.folders, mode, self.processed, to_m4b=to_m4b,
+            executor = Executor(self.folders, mode, self.processed, to_m4b=to_m4b, redo_m4b=redo_m4b,
                                 on_detail=lambda s: w.report(pos[0] + 1, pos[1], s))
             return executor.run(plan, chosen, on_progress=progress, cancelled=w.cancelled)
 
@@ -1021,7 +1103,10 @@ class MainWindow(QMainWindow):
                 msg += "\n\n" + "\n".join(f"• {r.book.meta.title}: {r.detail}" for r in failed[:15])
             QMessageBox.information(self, "Sort finished", msg)
 
-        self._run(work, finished, "Moving…" if mode == "move" else "Copying…")
+        self._run(work, finished, f"Sorting {len(chosen)} books ({'move' if mode == 'move' else 'copy'}"
+                  + (", MP3 → M4B" if to_m4b else "")
+                  + (f", M4B → M4B {'AAC' if self.folders.m4b_codec == 'aac' else 'chapters'}" if redo_m4b else "")
+                  + ")…")
 
     def _toggle_auto(self, on: bool) -> None:
         if on:
@@ -1102,6 +1187,12 @@ class MainWindow(QMainWindow):
             self.mode.blockSignals(True)
             self.mode.setCurrentIndex(1 if self.folders.move_originals else 0)
             self.mode.blockSignals(False)
+            self._redo_m4b_tip()
+            self._update_done_size()
+            self.cb_keep_done.blockSignals(True)
+            self.cb_keep_done.setChecked(self.folders.keep_done)
+            self.cb_keep_done.blockSignals(False)
+            self._keep_done_state()
             if self.folders.auto_minutes and not self.a_auto.isChecked():
                 self.a_auto.setChecked(True)
             elif self.a_auto.isChecked():
@@ -1116,7 +1207,7 @@ class MainWindow(QMainWindow):
         saved.setValue("window/splitter", self.split.saveState())
         saved.setValue("view/search", self.search.text())
         saved.setValue("view/state", STATE_FILTERS[self.state_filter.currentIndex()][1])
-        saved.setValue("view/show_sorted", self.a_show_sorted.isChecked())
+        saved.remove("view/show_sorted")  # old option: sorted books are only under Sorted now
         if self._worker:
             self._worker.cancel()
         QThreadPool.globalInstance().waitForDone(5000)

@@ -84,20 +84,22 @@ def test_existing_target_is_never_overwritten(tmp_path):
     assert target.read_bytes() == b"my own different file"
 
 
-def test_xhe_original_stays_even_in_move_mode(tmp_path, monkeypatch):
+def test_xhe_original_goes_to_done_in_move_mode(tmp_path, monkeypatch):
     from app.core import m4b
     src_dir = tmp_path / "in" / "Some Author" / "Some Book"
     src_dir.mkdir(parents=True)
     original = src_dir / "Some Book.m4b"
     original.write_bytes(b"xhe audio")
     folders = Folders(audio_sorted=tmp_path / "out", review=tmp_path / "rev", state=tmp_path / "state",
-                      protected=[], fix_xhe_aac=True)
+                      done=tmp_path / "done", protected=[], fix_xhe_aac=True)
     monkeypatch.setattr(m4b, "is_xhe_aac", lambda p: p.suffix == ".m4b" and b"xhe" in p.read_bytes())
     monkeypatch.setattr(m4b, "reencode_aac", lambda src, out, cancelled=None: out.write_bytes(b"plain aac"))
     books = load_books([tmp_path / "in"])
     result = Executor(folders, mode="move").run(Planner(folders).plan(books))
     assert result.count("done") == 1, result.results[0].detail
-    assert original.read_bytes() == b"xhe audio"            # the original is still in Incoming
+    assert not original.exists()                            # Move mode: the original left Incoming...
+    kept = next((tmp_path / "done").rglob("Some Book.m4b"))
+    assert kept.read_bytes() == b"xhe audio"                # ...and is kept in Done (nothing is deleted)
     sorted_file = next((tmp_path / "out").rglob("*.m4b"))
     assert sorted_file.read_bytes() == b"plain aac"         # the library gets the converted copy
 
@@ -113,3 +115,96 @@ def test_long_series_full_name_folder_short_book_folder_and_file(tmp_path):
     assert target.name == "1 - Hell Mode, Vol. 1"  # book folder (and file) short
     assert target.parent.name.startswith("Hell Mode - The Hardcore Gamer Dominates")  # series folder: full
     assert target.parent.name.endswith(" (Manga)")  # kept even when the name has to be shortened
+
+
+def test_rechaptered_m4b_original_goes_to_done_in_move_mode(tmp_path, monkeypatch):
+    from app.core import m4b
+    src_dir = tmp_path / "in" / "Some Author" / "Some Book"
+    src_dir.mkdir(parents=True)
+    original = src_dir / "Some Book.m4b"
+    original.write_bytes(b"old chapters")
+    (src_dir / "cover.jpg").write_bytes(b"img")
+    folders = Folders(audio_sorted=tmp_path / "out", review=tmp_path / "rev", state=tmp_path / "state",
+                      done=tmp_path / "done", protected=[], fix_xhe_aac=False, write_tags=False)
+    monkeypatch.setattr(m4b, "duration", lambda p: 100.0)
+    monkeypatch.setattr(m4b, "chapters_from_audible", lambda http, asin, total: [("Chapter 1", 0.0)])
+    monkeypatch.setattr(m4b, "rechapter", lambda src, out, *a, **kw: out.write_bytes(b"new chapters"))
+    monkeypatch.setattr(m4b, "add_cover", lambda out, image: None)
+    books = load_books([tmp_path / "in"])
+    books[0].meta.asin = "B000TEST01"
+    result = Executor(folders, mode="move", redo_m4b=True).run(Planner(folders).plan(books))
+    assert result.count("done") == 1, result.results[0].detail
+    assert not (tmp_path / "in" / "Some Author").exists()   # Incoming is empty
+    assert next((tmp_path / "out").rglob("*.m4b")).read_bytes() == b"new chapters"
+    assert next((tmp_path / "done").rglob("Some Book.m4b")).read_bytes() == b"old chapters"
+
+
+def test_progress_says_what_is_happening(tmp_path):
+    src_dir = tmp_path / "in" / "Some Author" / "Some Book"
+    src_dir.mkdir(parents=True)
+    (src_dir / "Some Book.m4b").write_bytes(b"audio")
+    folders = Folders(audio_sorted=tmp_path / "out", review=tmp_path / "rev", state=tmp_path / "state",
+                      done=tmp_path / "done", protected=[], fix_xhe_aac=False, write_tags=False)
+    steps: list[str] = []
+    books = load_books([tmp_path / "in"])
+    Executor(folders, mode="move", on_detail=steps.append).run(Planner(folders).plan(books))
+    assert any(s.startswith("Some Book - moving Some Book.m4b (") for s in steps), steps
+    assert "Some Book - moving the originals' leftovers to Done" in steps
+
+
+def _one_m4b_book(tmp_path, monkeypatch, codec="copy"):
+    from app.core import m4b
+    src_dir = tmp_path / "in" / "Some Author" / "Some Book"
+    src_dir.mkdir(parents=True)
+    (src_dir / "Some Book.m4b").write_bytes(b"original")
+    folders = Folders(audio_sorted=tmp_path / "out", review=tmp_path / "rev", state=tmp_path / "state",
+                      done=tmp_path / "done", protected=[], fix_xhe_aac=False, write_tags=False, m4b_codec=codec)
+    calls: list[str] = []
+    monkeypatch.setattr(m4b, "duration", lambda p: 100.0)
+    monkeypatch.setattr(m4b, "is_xhe_aac", lambda p: False)
+    monkeypatch.setattr(m4b, "chapters_from_audible", lambda http, asin, total: [("Chapter 1", 0.0)])
+    monkeypatch.setattr(m4b, "rechapter", lambda src, out, *a, **kw: (calls.append("copy"), out.write_bytes(b"new")))
+    monkeypatch.setattr(m4b, "encode_m4b", lambda src, out, *a, **kw: (calls.append("aac"), out.write_bytes(b"aac")))
+    monkeypatch.setattr(m4b, "add_cover", lambda out, image: None)
+    books = load_books([tmp_path / "in"])
+    books[0].meta.asin = "B000TEST01"
+    return folders, books, calls
+
+
+def test_mp3_to_m4b_leaves_a_single_m4b_alone(tmp_path, monkeypatch):
+    folders, books, calls = _one_m4b_book(tmp_path, monkeypatch)
+    Executor(folders, to_m4b=True, redo_m4b=False).run(Planner(folders).plan(books))
+    assert calls == [] and next((tmp_path / "out").rglob("*.m4b")).read_bytes() == b"original"
+
+
+def test_m4b_to_m4b_with_aac_codec_reencodes(tmp_path, monkeypatch):
+    folders, books, calls = _one_m4b_book(tmp_path, monkeypatch, codec="aac")
+    Executor(folders, redo_m4b=True).run(Planner(folders).plan(books))
+    assert calls == ["aac"] and next((tmp_path / "out").rglob("*.m4b")).read_bytes() == b"aac"
+
+
+def test_keep_done_off_deletes_the_old_copy_and_undo_keeps_the_new_one(tmp_path, monkeypatch):
+    import app.core.executor as ex
+    from app.core.history import list_runs, undo
+    monkeypatch.setattr(ex, "recycle_bin_on", lambda p: False)  # like drive H: - deleted for good
+    folders, books, calls = _one_m4b_book(tmp_path, monkeypatch)
+    folders.keep_done = False
+    original = books[0].main_file
+    result = Executor(folders, mode="move", redo_m4b=True).run(Planner(folders).plan(books))
+    assert result.count("done") == 1
+    assert not original.exists() and not (tmp_path / "done").exists()      # nothing kept in Done
+    sorted_file = next((tmp_path / "out").rglob("*.m4b"))
+    res = undo(next(r for r in list_runs(folders.state / "history") if r.run_id == result.run_id))
+    assert sorted_file.exists()                                            # the only copy left is kept
+    assert any("deleted for good" in s for s in res.skipped)
+
+
+def test_keep_done_off_uses_the_recycle_bin_when_there_is_one(tmp_path, monkeypatch):
+    import app.core.executor as ex
+    binned: list = []
+    monkeypatch.setattr(ex, "recycle_bin_on", lambda p: True)
+    monkeypatch.setattr(ex, "to_recycle_bin", lambda p: (binned.append(p.name), p.unlink()))
+    folders, books, calls = _one_m4b_book(tmp_path, monkeypatch)
+    folders.keep_done = False
+    Executor(folders, mode="move", redo_m4b=True).run(Planner(folders).plan(books))
+    assert binned == ["Some Book.m4b"]

@@ -141,15 +141,19 @@ class Sidebar(QFrame):
         self.mode = SegmentedSwitch(["Copy", "Move"])
         self.mode.setToolTip("Copy keeps the originals in Incoming. Move takes them out "
                              "(their leftover cover/metadata goes to the Done folder). Remembered.")
-        self.cb_m4b = QPushButton("MP3 → M4B")  # an on/off switch (checkable): lit when on
-        self.cb_m4b.setObjectName("pilltoggle")
-        self.cb_m4b.setCheckable(True)
-        self.cb_m4b.setCursor(Qt.PointingHandCursor)
-        self.cb_m4b.setFixedHeight(28)
         opts.setSpacing(6)
-        opts.addWidget(self.mode, 1)
-        opts.addWidget(self.cb_m4b, 1)
+        opts.addWidget(self.mode, 3)
+        self.cb_keep_done = self._pill("📦 Done")  # Move mode: keep old copies in the Done folder
+        opts.addWidget(self.cb_keep_done, 2)
         self.v.addLayout(opts)
+        audio = QHBoxLayout()
+        audio.setContentsMargins(0, 4, 0, 0)
+        audio.setSpacing(6)
+        self.cb_m4b = self._pill("MP3 → M4B")       # on/off switches (checkable): lit when on
+        self.cb_redo_m4b = self._pill("M4B → M4B")
+        audio.addWidget(self.cb_m4b, 1)
+        audio.addWidget(self.cb_redo_m4b, 1)
+        self.v.addLayout(audio)
 
         # -- book filters --
         self._group("BOOKS")
@@ -180,6 +184,15 @@ class Sidebar(QFrame):
         self.v.addStretch(1)
 
     # -- building blocks --------------------------------------------------
+    @staticmethod
+    def _pill(text: str) -> QPushButton:
+        b = QPushButton(text)
+        b.setObjectName("pilltoggle")
+        b.setCheckable(True)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setFixedHeight(28)
+        return b
+
     def _group(self, text: str) -> None:
         label = QLabel(text)
         label.setObjectName("navgroup")

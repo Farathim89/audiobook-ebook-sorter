@@ -53,3 +53,46 @@ def test_compare_sorts_into_have_and_do_not_have_and_undo(tmp_path, monkeypatch)
     assert sorted(p.name for p in lib.rglob("*") if p.is_file()) == ["The Great Cleric, Vol. 1.epub", "cover.jpg", "metadata.opf"]
     undo(next(r for r in list_runs(folders.state / "history") if r.run_id == run_id))
     assert (src / "junk/a/The Great Cleric, Vol. 1.epub").exists()
+
+
+def test_fit_path_gives_a_too_long_file_the_short_book_name(tmp_path):
+    from app.core.compare import fit_path, short_title
+    book = tmp_path / ("S" * 60) / "1 - 7th Time Loop, Vol. 1"
+    long = book / ("7th Time Loop The Villainess Enjoys a Carefree Life Married to Her Worst Enemy!, Vol. 1" * 2 + ".m4b")
+    assert fit_path(book / "cover.jpg", short_title(book.name)) == book / "cover.jpg"
+    taken: set = set()
+    assert fit_path(long, short_title(book.name), taken) == book / "7th Time Loop, Vol. 1.m4b"
+    assert fit_path(long, short_title(book.name), taken) == book / "7th Time Loop, Vol. 1 (2).m4b"
+
+
+def test_shorten_long_paths_renames_and_undoes(tmp_path):
+    from app.core.compare import shorten_long_paths
+    book = tmp_path / ("S" * 90) / "3 - My Daughter, Vol. 3"
+    book.mkdir(parents=True)
+    long = book / ("My Daughter Left the Nest and Returned an S-rank Adventurer" * 2 + ".m4b")
+    long.write_bytes(b"x")
+    (book / "cover.jpg").write_bytes(b"img")
+    folders = Folders(state=tmp_path / "state")
+    run_id, n = shorten_long_paths(folders, tmp_path / ("S" * 90))
+    assert n == 1 and sorted(p.name for p in book.iterdir()) == ["My Daughter, Vol. 3.m4b", "cover.jpg"]
+    undo(next(r for r in list_runs(folders.state / "history") if r.run_id == run_id))
+    assert long.exists()
+
+
+def test_shorter_keeps_the_volume():
+    from app.core.compare import shorter
+    assert shorter("My Daughter Left the Nest and Returned an S-Rank Adventurer, Vol. 3", 40) == \
+        "My Daughter Left the Nest, Vol. 3"
+    assert shorter("Short, Vol. 1", 40) == "Short, Vol. 1"
+
+
+def test_shorten_long_paths_shortens_a_too_long_book_folder(tmp_path):
+    from app.core.compare import shorten_long_paths
+    series = tmp_path / ("S" * 70)
+    book = series / ("3 - " + "My Daughter Left the Nest and Returned an S-Rank Adventurer" * 2 + ", Vol. 3")
+    book.mkdir(parents=True)
+    (book / "x.m4b").write_bytes(b"x")
+    run_id, n = shorten_long_paths(Folders(state=tmp_path / "state"), series)
+    (new,) = series.iterdir()
+    assert new.name.startswith("3 - My Daughter") and new.name.endswith(", Vol. 3")
+    assert all(len(str(p)) <= 259 for p in new.rglob("*")) and (new / "x.m4b").exists()

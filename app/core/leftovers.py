@@ -98,3 +98,24 @@ def drop_empty_parents(folder: Path, stop: Path) -> None:
         except OSError:
             return
         folder = folder.parent
+
+
+def folder_size(folder: Path) -> tuple[int, int]:
+    """(bytes, files) under folder - (0, 0) when it doesn't exist."""
+    total = count = 0
+    if folder.is_dir():
+        for f in folder.rglob("*"):
+            try:
+                if f.is_file():
+                    total += f.stat().st_size
+                    count += 1
+            except OSError:
+                pass
+    return total, count
+
+
+def human_size(n: int) -> str:
+    for unit, size in (("TB", 2**40), ("GB", 2**30), ("MB", 2**20)):
+        if n >= size:
+            return f"{n / size:.1f} {unit}"
+    return f"{n // 1024} KB"

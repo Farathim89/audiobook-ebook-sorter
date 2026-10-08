@@ -65,6 +65,19 @@ def author_score(authors: list[str], narrators: list[str], cand: Candidate) -> f
     return max((_ratio(fold(a), fold(b)) for a, b in pairs), default=0.0)
 
 
+_TITLE_VOLUME_RE = re.compile(r"(?i)\b(?:volume|vol\.?|book|part)\s*0*(\d+(?:\.\d+)?)\s*$")
+
+
+def _volume_in(cand: Candidate) -> float | None:
+    """The candidate's volume: its series number, else 'Volume 2' at the end of its title/subtitle."""
+    if cand.meta.series_index is not None:
+        return cand.meta.series_index
+    for text in (cand.meta.title, getattr(cand.meta, "subtitle", None)):
+        if text and (hit := _TITLE_VOLUME_RE.search(text)):
+            return float(hit.group(1))
+    return None
+
+
 def rank(book: Book, candidates: list[Candidate], language: str = "English") -> list[Candidate]:
     """Best first. A translation (German/French edition...) is never applied automatically
     unless the book itself is known to be in that language."""
@@ -74,7 +87,9 @@ def rank(book: Book, candidates: list[Candidate], language: str = "English") -> 
         t, a = title_score(m.title, c), author_score(m.authors, m.narrators, c)
         lang_ok = not c.meta.language or not want_lang or norm_language(c.meta.language) == want_lang
         c.score = round(0.7 * t + 0.3 * a - (0 if lang_ok else 0.1), 3)
-        same_number = (m.series_index is None or c.meta.series_index is None
-                       or m.series_index == c.meta.series_index)
-        c.confident = t >= AUTO_TITLE and a >= AUTO_AUTHOR and same_number and lang_ok
+        # 'Volume 2' vs our volume 1 scores 99% on the title alone: the number must agree
+        vol = _volume_in(c)
+        same_number = m.series_index is None or vol is None or m.series_index == vol
+        same_asin = bool(m.asin and c.meta.asin and m.asin.upper() == c.meta.asin.upper())
+        c.confident = (t >= AUTO_TITLE or same_asin) and a >= AUTO_AUTHOR and same_number and lang_ok
     return sorted(candidates, key=lambda c: (c.confident, c.score), reverse=True)

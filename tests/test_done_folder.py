@@ -122,3 +122,13 @@ def test_daisy_player_files_stay_behind_and_go_to_done(tmp_path):
     sorted_files = sorted(p.name for p in (tmp_path / "sorted").rglob("*") if p.is_file())
     assert "a1.smil" not in sorted_files and "default.css" not in sorted_files and "Ronja.m4b" in sorted_files
     assert {"a1.smil", "default.css", "ncc.html"} <= {p.name for p in (tmp_path / "done").rglob("*")}
+
+
+def test_done_folder_size(tmp_path):
+    from app.core.leftovers import folder_size, human_size
+    assert folder_size(tmp_path / "missing") == (0, 0)
+    (tmp_path / "d" / "x").mkdir(parents=True)
+    (tmp_path / "d" / "a.m4b").write_bytes(b"1" * 3000)
+    (tmp_path / "d" / "x" / "cover.jpg").write_bytes(b"2" * 1000)
+    assert folder_size(tmp_path / "d") == (4000, 2)
+    assert human_size(3 * 2**30 // 2) == "1.5 GB" and human_size(4000) == "3 KB"

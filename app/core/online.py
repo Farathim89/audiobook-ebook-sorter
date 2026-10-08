@@ -20,7 +20,7 @@ from ..providers.itunes import ITunes
 from ..providers.mangadex import MangaDex
 from ..providers.openlibrary import OpenLibrary
 from ..providers.storytel import Storytel
-from .metadata import GUESSED, update_status
+from .metadata import GUESSED, strip_tags, update_status
 from .models import Book, BookType, Metadata
 from .text import fold
 
@@ -151,6 +151,7 @@ class OnlineLookup:
             if on_progress:
                 on_progress(i, len(todo), book)
         self._kind_from_author(books, self.manga_authors_in_library)
+        _same_kind_per_series(books)
         _note_mixed_kinds(books)
         _spin_offs_of_light_novels(books)
 
@@ -422,8 +423,12 @@ class OnlineLookup:
         if re.search(r"(?i)\blight novel\b|\(novel\)", series):
             return True
         name = re.sub(r"(?i)\s+series$", "", _LN_SUFFIX_RE.sub("", series))  # Audible's "... Series"
+        # Audible drops the article ('Cave King's Road...' - AniList: 'A Cave King's Road...'): try both
+        bare = re.sub(r"(?i)^(?:the|an?)\s+", "", name)
+        names = dict.fromkeys([name, bare, f"A {bare}", f"The {bare}"])
         try:
-            return self.anilist.series(name, novel=True, prefix_ok=True, authors=authors) is not None
+            return any(self.anilist.series(n, novel=True, prefix_ok=True, authors=authors) is not None
+                       for n in names)
         except OSError:
             return False
 
@@ -453,10 +458,31 @@ def apply_candidate(book: Book, cand: Candidate) -> None:
     book.override(cand.meta, cand.provider)
     m = book.meta
     # light novels: the shop calls every volume just "<Series>" - keep the volume in the title
-    if had_volume and m.series_index is not None and m.title and not _VOLUME_MARK_RE.search(m.title) \
-            and not re.search(r"\d", m.title):
+    if m.series_index is not None and m.title and not _VOLUME_MARK_RE.search(m.title) \
+            and not re.search(r"\d", m.title) and (had_volume or _starts_series(m.title, m.series)):
         m.title = f"{m.title}, Vol. {m.series_index:g}"
+    strip_tags(book)  # the shop's '(A Deck Building LitRPG)' / '(Light Novel)'
     update_status(book)
+
+
+def _starts_series(title: str, series: str | None) -> bool:
+    """'A Cave King's Road to Paradise' is the start of 'Cave King's Road to Paradise: Climbing...'."""
+    from .consistency import series_key  # noqa: PLC0415
+    t, s = series_key(title), series_key(series or "")
+    return bool(t and s) and s != t and s.startswith(t)  # a title that IS the series stays as it is
+
+
+def _same_kind_per_series(books: list[Book]) -> None:
+    """Volumes of one series are all light novels when one is (AniList may know only one spelling)."""
+    from .consistency import series_key  # noqa: PLC0415
+    groups: dict[str, list[Book]] = {}
+    for b in books:
+        if b.type is BookType.AUDIO and b.meta.series:
+            groups.setdefault(series_key(b.meta.series), []).append(b)
+    for group in groups.values():
+        if any(b.light_novel for b in group):
+            for b in group:
+                b.light_novel = True
 
 
 def apply_fill(book: Book, cand: Candidate) -> None:

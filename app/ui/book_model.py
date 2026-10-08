@@ -199,15 +199,12 @@ class BookFilter(QSortFilterProxyModel):
         self.setSortRole(SORT_ROLE)
         self.text = ""
         self.state = "all"
-        self.show_sorted = False
 
-    def set_filter(self, text: str | None = None, state: str | None = None, show_sorted: bool | None = None) -> None:
+    def set_filter(self, text: str | None = None, state: str | None = None) -> None:
         if text is not None:
             self.text = text.casefold()
         if state is not None:
             self.state = state
-        if show_sorted is not None:
-            self.show_sorted = show_sorted
         self.invalidateFilter()
 
     def lessThan(self, left, right) -> bool:
@@ -221,8 +218,8 @@ class BookFilter(QSortFilterProxyModel):
         model: BookModel = self.sourceModel()
         book = model.books[row]
         state = model.state(book)
-        if state == "sorted" and not self.show_sorted:
-            return False
+        if state == "sorted" and self.state != "sorted":
+            return False  # sorted books only show under Sorted
         if self.state != "all" and state != self.state:
             return False
         if self.text:

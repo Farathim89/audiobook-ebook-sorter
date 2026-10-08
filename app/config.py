@@ -28,6 +28,7 @@ class Folders:
     auto_move_duplicates: bool = False  # auto-sort also moves extra copies / books already in the library
     done: Path = DEFAULT_BASE / "Sorted" / "Done"  # originals of sorted books + their leftover cover/metadata
     move_originals: bool = False  # sorting MOVES the originals out of Incoming (else copies, keeps them)
+    keep_done: bool = True  # Move mode keeps old copies + leftovers in Done (off: Recycle Bin, or deleted for good)
     done_days: int = 0  # Done\<day> folders older than this go to the Recycle Bin (0 = keep forever)
     # Online-lookup cache, run history (undo) and the processed list.
     state: Path = (PORTABLE / "state" if PORTABLE is not None
@@ -49,6 +50,8 @@ class Folders:
     write_tags: bool = True  # write the corrected metadata into the sorted files
     theme: str = "Gold (dark)"  # colour theme of the window
     to_m4b: bool = False     # sorting turns multi-file audiobooks into one chaptered .m4b
+    redo_m4b: bool = False   # sorting remakes books that already are ONE .m4b (see m4b_codec)
+    m4b_codec: str = "copy"  # redo_m4b: "copy" = keep the audio, only Audible's chapters; "aac" = re-encode to AAC
     # xHE-AAC -> plain AAC (ABS can't play xHE). Decoded by Windows' own xHE decoder - ffmpeg loses ~24%
     # of the packets (dropouts) - so on other systems the conversion is refused instead.
     fix_xhe_aac: bool = True
@@ -102,11 +105,11 @@ def load_folders(path: Path = SETTINGS_FILE) -> Folders:
             continue
         value, default = data[f.name], getattr(folders, f.name)
         if f.name == "swedish_sorted":
-            value = Path(value) if value else None
+            value = _portable_path(value) if value else None
         elif isinstance(default, list):
-            value = [Path(v) for v in value]
+            value = [_portable_path(v) for v in value]
         elif isinstance(default, Path):
-            value = Path(value)
+            value = _portable_path(value)
         elif isinstance(default, bool):
             value = bool(value)
         elif isinstance(default, int):
@@ -117,11 +120,27 @@ def load_folders(path: Path = SETTINGS_FILE) -> Folders:
     return folders
 
 
+def _portable_path(value) -> Path:
+    """A relative path in portable settings is inside the BookSorter-data folder (it moves with it)."""
+    p = Path(value)
+    return PORTABLE / p if PORTABLE is not None and not p.is_absolute() else p
+
+
+def _saved_path(p: Path) -> str:
+    """Portable mode: paths inside BookSorter-data are saved relative, so the folder can move (USB, other PC)."""
+    if PORTABLE is not None:
+        try:
+            return str(Path(p).resolve().relative_to(PORTABLE.resolve()))
+        except ValueError:
+            pass
+    return str(p)
+
+
 def save_folders(folders: Folders, path: Path = SETTINGS_FILE) -> None:
     def plain(v):
         if isinstance(v, list):
-            return [str(x) for x in v]
-        return str(v) if isinstance(v, Path) else v
+            return [_saved_path(x) for x in v]
+        return _saved_path(v) if isinstance(v, Path) else v
     data = {k: plain(v) for k, v in asdict(folders).items()}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")

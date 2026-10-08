@@ -228,12 +228,26 @@ class SettingsDialog(QDialog):
         form.addRow("", self.split_books)
         form.addRow("Files", self.write_tags)
         form.addRow("", self.fix_xhe)
+        from .sidebar import SegmentedSwitch  # noqa: PLC0415
+        self.m4b_codec = SegmentedSwitch(["Keep audio", "Re-encode AAC"])
+        self.m4b_codec.setCurrentIndex(1 if folders.m4b_codec == "aac" else 0)
+        self.m4b_codec.setToolTip("What the M4B → M4B switch does to books that already are one .m4b:\n"
+                                  "Keep audio - only Audible's chapter names, the sound is copied as it is (fast)\n"
+                                  "Re-encode AAC - new AAC audio at the same bitrate (slow), plus Audible's chapters")
+        form.addRow("M4B → M4B", self.m4b_codec)
         self.move_originals = QCheckBox("Move originals out of Incoming")
         self.move_originals.setChecked(folders.move_originals)
         self.move_originals.setToolTip("Else copy and keep them. Leftover cover/metadata files go to the Done "
-                                       "folder. Also used by auto-sort. MP3 → M4B and xHE-AAC fixes always "
-                                       "keep the original audio files.")
+                                       "folder. Also used by auto-sort. When MP3 → M4B, M4B → M4B or the "
+                                       "xHE-AAC fix makes a new file, the original goes to the Done folder.")
         form.addRow("Originals", self.move_originals)
+        self.keep_done = QCheckBox("Keep old copies in Done")
+        self.keep_done.setChecked(folders.keep_done)
+        self.keep_done.setToolTip("Move mode: the old copy of a book that got a new file (M4B → M4B, MP3 → M4B, "
+                                  "xHE fix)\nand its leftover cover/metadata files go to the Done folder - a safety "
+                                  "net you empty yourself.\nOff: they go to the Recycle Bin, or are DELETED FOR GOOD "
+                                  "when the drive has no Recycle Bin.\nThe sorted book is always complete first.")
+        form.addRow("", self.keep_done)
         self.done_days = QSpinBox()
         self.done_days.setRange(0, 3650)
         self.done_days.setSuffix(" days")
@@ -248,6 +262,7 @@ class SettingsDialog(QDialog):
         self.bin_warning.setStyleSheet("color: #e0a030; font-weight: bold;")
         form.addRow("", self.bin_warning)
         self.done_days.valueChanged.connect(self._check_recycle_bin)
+        self.keep_done.toggled.connect(self._check_recycle_bin)
         self._check_recycle_bin()
         self.auto = QSpinBox()
         self.auto.setRange(0, 1440)
@@ -371,14 +386,21 @@ class SettingsDialog(QDialog):
         """Warn when the Done folder's drive deletes at once: emptying Done would then do nothing."""
         from ..core.leftovers import recycle_bin_on  # noqa: PLC0415
         done = Path(self.edits["done"].text().strip() or str(self.folders.done))
+        incoming = self.folders.audio_incoming
         try:
             off = self.done_days.value() > 0 and not recycle_bin_on(done)
+            gone = not self.keep_done.isChecked() and not recycle_bin_on(incoming)
         except OSError:
-            off = False
-        self.bin_warning.setText(f"The Recycle Bin is switched off for drive {done.drive or done} - emptying Done is "
-                                 "refused (Windows would delete for good). Turn it on: Recycle Bin > Properties."
-                                 if off else "")
-        self.bin_warning.setVisible(off)
+            off = gone = False
+        texts = []
+        if gone:
+            texts.append(f"No Recycle Bin on drive {incoming.drive or incoming}: with 'Keep old copies in Done' "
+                         "off, old copies are DELETED FOR GOOD after sorting (undo can't bring them back).")
+        if off:
+            texts.append(f"The Recycle Bin is switched off for drive {done.drive or done} - emptying Done is "
+                         "refused (Windows would delete for good). Turn it on: Recycle Bin > Properties.")
+        self.bin_warning.setText("\n".join(texts))
+        self.bin_warning.setVisible(bool(texts))
 
     def reject(self) -> None:
         theme.apply(self.folders.theme)  # undo the live preview
@@ -420,10 +442,12 @@ class SettingsDialog(QDialog):
         self.folders.split_books = self.split_books.isChecked()
         self.folders.write_tags = self.write_tags.isChecked()
         self.folders.fix_xhe_aac = self.fix_xhe.isChecked()
+        self.folders.m4b_codec = "aac" if self.m4b_codec.currentIndex() == 1 else "copy"
         self.folders.auto_minutes = self.auto.value()
         self.folders.auto_move_duplicates = self.auto_dupes.isChecked()
         self.folders.move_originals = self.move_originals.isChecked()
         self.folders.done_days = self.done_days.value()
+        self.folders.keep_done = self.keep_done.isChecked()
         if self.create.isChecked():
             for name in ("audio_incoming", "books_incoming", "audio_sorted", "books_sorted", "review", "duplicates",
                          "done", "state"):

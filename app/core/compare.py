@@ -16,7 +16,7 @@ from .consistency import series_key, unify_names
 from .library import LibraryEditor
 from .models import Book, BookType
 from .pipeline import load_books
-from .planner import Planner
+from .planner import MAX_PATH, Planner
 from .text import fold, name_key
 
 HAVE, HAVE_NOT = "-=Have=-", "-=Do Not Have=-"
@@ -111,7 +111,7 @@ def apply_compare(folders: Folders, result: Comparison, dest: Path) -> tuple[str
             planner = Planner(replace(folders, audio_sorted=root / "AudioBooks", books_sorted=root / "Books",
                                       swedish_sorted=None))
             for b in _one_per_split_book(books):
-                target = planner.book_dir(b)
+                target = planner._fit(b)[0]  # series / title folders shortened to fit 260 characters
                 here = b.folder or b.main_file.parent
                 if here == target:
                     continue  # already in its place (the tool ran here before)
@@ -120,9 +120,11 @@ def apply_compare(folders: Folders, result: Comparison, dest: Path) -> tuple[str
                     n += 1
                     target = target.with_name(f"{base_name} (copy {n})")
                 sources.add(b.source_root)
+                taken: set[str] = set()
                 for f in _book_files(b):
                     rel = f.relative_to(here) if here in f.parents else Path(f.name)
-                    ed.move_file(f, target / rel)
+                    dst = fit_path(target / rel, short_title(target.name), taken)
+                    ed.move_file(f, dst)
                     moved += 1
         for src in sources:  # drop the emptied folders (never the Have / Do Not Have roots)
             for d in sorted((p for p in src.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
@@ -132,6 +134,78 @@ def apply_compare(folders: Folders, result: Comparison, dest: Path) -> tuple[str
                     except OSError:
                         pass
         return ed.run_id, moved
+
+
+def short_title(book_folder: str) -> str:
+    """'3 - My Daughter ..., Vol. 3' -> 'My Daughter ..., Vol. 3' (the name a too-long file gets)."""
+    return re.sub(r"^\d+(?:\.\d+)? - ", "", book_folder).strip() or book_folder
+
+
+_VOL_TAIL_RE = re.compile(r"(?i),?\s*vol(?:ume)?\.?\s*\d+(?:\.\d+)?$")
+ROOM_FOR_FILES = 45  # a book folder leaves at least this many characters for its file names
+
+
+def shorter(name: str, room: int) -> str:
+    """Shorten at a word and keep the ', Vol. N' ending:
+    'My Daughter Left the Nest and Returned an S-Rank Adventurer, Vol. 3' -> 'My Daughter Left the Nest, Vol. 3'."""
+    if len(name) <= room:
+        return name
+    m = _VOL_TAIL_RE.search(name)
+    tail = m.group(0) if m else ""
+    head = name[:len(name) - len(tail)]
+    cut = head[:max(8, room - len(tail))]
+    if " " in cut and not head[len(cut):len(cut) + 1] in ("", " "):
+        cut = cut[:cut.rfind(" ")]
+    cut = re.sub(r"(?i)(\s+(?:and|an?|the|of|to|in|with|for|or))+\s*$", "", cut.rstrip(" .,-:;!"))
+    return cut.rstrip(" .,-:;!") + tail
+
+
+def fit_path(dst: Path, short: str, taken: set[str] | None = None) -> Path:
+    """A file whose full path is over 260 characters (VLC and most Windows programs can't open it)
+    gets the short book name instead ('<short>.m4b'), shortened further when even that is too long."""
+    taken = set() if taken is None else taken
+    if len(str(dst)) <= MAX_PATH and dst.name.lower() not in taken:
+        taken.add(dst.name.lower())
+        return dst
+    room = MAX_PATH - len(str(dst.parent)) - 1 - len(dst.suffix)
+    stem = short if len(str(dst)) > MAX_PATH else dst.stem
+    n = 1
+    while True:
+        extra = f" ({n})" if n > 1 else ""
+        name = shorter(stem, max(8, room - len(extra))) + extra + dst.suffix
+        if name.lower() not in taken and (dst.parent / name == dst or not (dst.parent / name).exists()):
+            taken.add(name.lower())
+            return dst.parent / name
+        n += 1
+
+
+def shorten_long_paths(folders: Folders, root: Path) -> tuple[str, int]:
+    """Fix every file under root whose path is over 260 characters: a book folder that leaves too
+    little room is shortened ('3 - My Daughter Left the Nest, Vol. 3'), then the file gets the book's
+    short name. Journaled: undo from History."""
+    by_folder: dict[Path, list[Path]] = defaultdict(list)
+    for p in root.rglob("*"):
+        if p.is_file() and len(str(p)) > MAX_PATH:
+            by_folder[p.parent].append(p)
+    with LibraryEditor(folders, "shorten-paths") as ed:
+        for book, files in sorted(by_folder.items()):
+            room = MAX_PATH - ROOM_FOR_FILES - len(str(book.parent)) - 1
+            if len(book.name) > room:
+                m = re.match(r"^\d+(?:\.\d+)? - ", book.name)
+                prefix = m.group(0) if m else ""
+                new = book.with_name(prefix + shorter(book.name[len(prefix):], room - len(prefix)))
+                if new != book and not new.exists():
+                    ed.rename(book, new)
+                    files = [new / f.name for f in files]
+                    book = new
+            for p in sorted(files):
+                if len(str(p)) <= MAX_PATH:
+                    continue
+                taken = {q.name.lower() for q in book.iterdir() if q != p}
+                dst = fit_path(p, short_title(book.name), taken)
+                if dst != p:
+                    ed.rename(p, dst)
+        return ed.run_id, sum(len(v) for v in by_folder.values())
 
 
 def _one_per_split_book(books: list[Book]) -> list[Book]:

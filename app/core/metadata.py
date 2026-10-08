@@ -20,6 +20,12 @@ _ROLE_RE = re.compile(r"(?i)[\s(\-–,]+(?:translator|translated by|översättar
 _KIND_SUFFIX_RE = re.compile(r"\s*\((Manga|Comic)\)\s*$", re.I)
 _KIND_FOLDERS = {"audiobooks", "lightnovels", "manga", "ebooks", "comics", "books", "audiobooksorted", "bookssorted"}
 _MANGA_HINT_RE =re.compile(r"(?i)\(manga\)|\bmanga\b")
+# '(Light Novel)' in a title/series: a kind, not a name ('A Tale of the Secret Saint (Light Novel), Vol. 1')
+_LN_TAG_RE = re.compile(r"(?i)\s*[(\[](?:light novel|novel)[)\]]")
+# shop genre tags: 'A Summoner Awakens: Origins: (A Deck Building LitRPG)', '(A LitRPG Adventure)'
+_GENRE_TAG_RE = re.compile(r"(?i)\s*[(\[][^()\[\]]*\b(?:LitRPG|GameLit|Progression Fantasy|Cultivation|Isekai|"
+                           r"Harem|Dungeon Core|Portal Fantasy|Base Building|Deck Building|Kingdom Building|"
+                           r"System Apocalypse|Monster Evolution|Fantasy Adventure)\b[^()\[\]]*[)\]]")
 
 
 def read_local(book: Book, abs_json: bool = True) -> None:
@@ -112,6 +118,7 @@ def _tidy(book: Book) -> None:
             if book.source_root in book.main_file.parents else [m.title, m.series, book.main_file.stem]
         if _MANGA_HINT_RE.search(" ".join(filter(None, names))):  # 'The Eminence in Shadow (manga)'
             book.manga = book.kind_known = True
+    strip_tags(book)
     m.title = clean_title(m.title)
     m.series = clean_title(m.series)
     if m.series and (kind := _KIND_SUFFIX_RE.search(m.series)):
@@ -137,6 +144,12 @@ def _tidy(book: Book) -> None:
         split = split_series_from_title(m.title)
         if split and m.series and _same_series(split[1], m.series):
             m.title = split[0]  # the series is known already; just drop it from the title
+            if m.series_index is not None and split[2] != m.series_index:
+                # the title says 'Volume 1' but the metadata file's series says '#02': the title wins,
+                # unless the file name agrees with the series number
+                file_vol = parse_volume(book.main_file.stem)
+                if not (file_vol and file_vol[1] == m.series_index):
+                    m.series_index = split[2]
         elif split and not m.series:
             m.title, m.series, m.series_index = split
             book.sources["series"] = book.sources["series_index"] = book.sources.get("title", "")
@@ -178,6 +191,45 @@ def _tidy(book: Book) -> None:
         m.narrators = dedupe(m.narrators)
     else:  # in tags the author is often repeated as composer/narrator by mistake
         m.narrators = [n for n in dedupe(m.narrators) if fold(n) not in {fold(a) for a in m.authors}]
+
+
+def strip_tags(book: Book) -> None:
+    """Shop tags out of title/series - also after an online match: 'A Summoner Awakens: Origins:
+    (A Deck Building LitRPG)' -> 'A Summoner Awakens: Origins'; audiobooks: 'A Tale of the Secret Saint
+    (Light Novel) Vol. 1' -> 'A Tale of the Secret Saint, Vol. 1' (the Light Novels folder says the kind)."""
+    m = book.meta
+    if book.type is BookType.COMIC:
+        return
+    changed = False
+    for field in ("title", "series"):
+        value = getattr(m, field)
+        if value and book.type is BookType.AUDIO and _LN_TAG_RE.search(value):
+            book.light_novel = True
+            value = _LN_TAG_RE.sub("", value)
+        if value and _GENRE_TAG_RE.search(value):
+            value = _GENRE_TAG_RE.sub("", value).strip().rstrip(":-–,;").strip()
+        if value != getattr(m, field):
+            setattr(m, field, value)
+            changed = True
+    article_from_title(book)
+    if changed and m.title and m.series and m.series_index is not None \
+            and (vol := parse_volume(m.title)) and fold(vol[0]) == fold(m.series) and vol[1] == m.series_index:
+        m.title = f"{m.series}, Vol. {format_index(m.series_index)}"  # one style, like the manga
+
+
+_ARTICLE_RE = re.compile(r"(?i)^(the|an?)\s+(.+)$")
+
+
+def article_from_title(book: Book) -> None:
+    """Audible drops the article from series names: title 'A Cave King's Road to Paradise, Vol. 1' with
+    series 'Cave King's Road to Paradise: Climbing...' -> series 'A Cave King's Road to Paradise: ...'."""
+    m = book.meta
+    if not m.title or not m.series or _ARTICLE_RE.match(m.series):
+        return
+    hit = _ARTICLE_RE.match(m.title)
+    start = fold(re.split(r"\s*[:,(]", hit.group(2))[0]) if hit else ""
+    if start and fold(m.series).startswith(start):
+        m.series = f"{hit.group(1)} {m.series}"
 
 
 def _swapped_halves(book: Book) -> bool:

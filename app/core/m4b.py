@@ -269,6 +269,12 @@ def rechapter(m4b: Path, out: Path, chapters: list[Chapter], title: str | None, 
     _run_ffmpeg([m4b], out, chapters, title, total, encode=False, cancelled=cancelled)
 
 
+def encode_m4b(m4b: Path, out: Path, chapters: list[Chapter], title: str | None, total: float,
+               on_progress: Progress | None = None, cancelled: Callable[[], bool] = lambda: False) -> None:
+    """Re-encode an m4b to AAC (same bitrate, 32k..128k) with new chapters."""
+    _run_ffmpeg([m4b], out, chapters, title, total, encode=True, on_progress=on_progress, cancelled=cancelled)
+
+
 def _run_ffmpeg(files, out, chapters, title, total, encode, on_progress=None, cancelled=lambda: False) -> None:
     exe = ffmpeg()
     if not exe:

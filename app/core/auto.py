@@ -106,7 +106,8 @@ def auto_sort(folders: Folders, processed: Processed | None = None,
     sure = [b for b in books if b.status is Status.READY and not plan.problems.get(b) and b not in plan.review]
     result.left = [b for b in books if b not in sure]
     if sure and not cancelled():
-        result.run = Executor(folders, "move" if folders.move_originals else "copy", processed, to_m4b=folders.to_m4b).run(plan, sure, cancelled=cancelled)
+        result.run = Executor(folders, "move" if folders.move_originals else "copy", processed, to_m4b=folders.to_m4b,
+                              redo_m4b=folders.redo_m4b).run(plan, sure, cancelled=cancelled)
     if folders.auto_move_duplicates and not cancelled():
         from .library import move_duplicates  # noqa: PLC0415
         moves, _ = find_duplicates(folders, cancelled=cancelled)

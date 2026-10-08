@@ -73,12 +73,21 @@ def undo(run: RunInfo, processed: Processed | None = None) -> UndoResult:
     entries = _read(run.path)
     # files we re-tagged after copying: their expected size is the size after tagging
     final_size = {e["dst"]: e.get("size") for e in entries if e.get("op") == "update"}
+    # originals were deleted in this run ('Keep old copies in Done' off): its new files are the only copies
+    deleted_originals = any(e.get("op") == "delete" for e in entries)
     for e in reversed(entries):
         op = e.get("op")
         dst = Path(e["dst"]) if "dst" in e else None
         try:
+            if op == "delete":
+                where = "in the Recycle Bin" if e.get("how") == "recycle bin" else "deleted for good"
+                result.skipped.append(f"{where}, can't bring back: {e.get('src')}")
+                continue
             if op in ("copy", "create"):
                 if not dst.exists():
+                    continue
+                if deleted_originals and op == "create":
+                    result.skipped.append(f"kept - its original was deleted when sorting: {dst}")
                     continue
                 size = final_size.get(e["dst"], e.get("size"))
                 if size is not None and dst.stat().st_size != size:

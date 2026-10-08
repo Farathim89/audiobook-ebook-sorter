@@ -109,3 +109,68 @@ def test_known_series_is_stripped_from_title(tmp_path):
     book = Book(BookType.AUDIO, [f], tmp_path)
     read_local(book)
     assert (book.meta.title, book.meta.series, book.meta.series_index) == ("Tehanu", "The Earthsea Cycle", 4)
+
+
+def test_a_volume_number_only_in_the_title_still_counts():
+    # Storytel: no series number, 'Volume 2' at the end of the title - not our volume 1
+    book = _book(title="A Cave King's Road to Paradise: Climbing to the Top with My Almighty Mining Skills! Volume 1",
+                 authors=["Hajime Naehara"], series_index=1)
+    cand = _cand(title="A Cave King's Road to Paradise: Climbing to the Top with My Almighty Mining Skills! Volume 2",
+                 authors=["Hajime Naehara"])
+    assert not rank(book, [cand])[0].confident
+
+
+def test_same_asin_is_confident_even_when_the_shop_title_is_shorter():
+    book = _book(title="A Cave King's Road to Paradise: Climbing to the Top!, Vol. 1", authors=["Hajime Naehara"],
+                 series_index=1, asin="B0F8KXZFVM")
+    cand = _cand(title="A Cave King's Road to Paradise", authors=["Hajime Naehara"], asin="B0F8KXZFVM",
+                 series="Cave King's Road to Paradise: Climbing to the Top!", series_index=1)
+    assert rank(book, [cand])[0].confident
+    apply_candidate(book, cand)
+    assert book.meta.title == "A Cave King's Road to Paradise, Vol. 1"  # the shop title is just the series' start
+
+
+def test_shop_tags_are_dropped_after_an_online_match():
+    book = _book(title="A Summoner Awakens", authors=["Kerberos"])
+    apply_candidate(book, _cand(title="A Summoner Awakens: Origins: (A Deck Building LitRPG)", authors=["Kerberos"],
+                                series="A Summoner Awakens", series_index=1))
+    assert book.meta.title == "A Summoner Awakens: Origins"
+    saint = _book(title="A Tale of the Secret Saint, Vol. 1", authors=["Touya"], series_index=1)
+    apply_candidate(saint, _cand(title="A Tale of the Secret Saint (Light Novel) Vol. 1", authors=["Touya"],
+                                 series="A Tale of the Secret Saint (Light Novel)", series_index=1))
+    assert (saint.meta.title, saint.meta.series, saint.light_novel) == \
+        ("A Tale of the Secret Saint, Vol. 1", "A Tale of the Secret Saint", True)
+
+
+def test_series_key_ignores_a_leading_article():
+    from app.core.consistency import series_key
+    assert series_key("A Cave King’s Road to Paradise") == series_key("Cave King's Road to Paradise")
+
+
+def test_title_volume_beats_a_wrong_series_number_in_the_metadata_file(tmp_path):
+    from app.core.metadata import _tidy
+    f = tmp_path / "A Cave King's Road to Paradise, Vol. 01.m4b"
+    book = Book(BookType.AUDIO, [f], tmp_path)
+    book.meta = Metadata(title="A Cave King's Road to Paradise: Climbing to the Top! Volume 1",
+                         series="A Cave King’s Road to Paradise: Climbing to the Top!", series_index=2,
+                         authors=["Hajime Naehara"])
+    book.sources.update(title="sidecar", series="sidecar", series_index="sidecar")
+    _tidy(book)
+    assert book.meta.series_index == 1
+
+
+def test_series_gets_its_article_back_from_the_title():
+    book = _book(title="A Cave King's Road to Paradise, Vol. 2", authors=["Hajime Naehara"], series_index=2)
+    apply_candidate(book, _cand(title="A Cave King's Road to Paradise", authors=["Hajime Naehara"],
+                                series="Cave King's Road to Paradise: Climbing to the Top!", series_index=2))
+    assert book.meta.series == "A Cave King's Road to Paradise: Climbing to the Top!"
+    other = _book(title="Ascension", authors=["Kerberos"], series_index=2)
+    apply_candidate(other, _cand(title="Ascension", authors=["Kerberos"], series="Summoner Awakens", series_index=2))
+    assert other.meta.series == "Summoner Awakens"  # nothing in the title to take it from
+
+
+def test_series_spelling_tie_keeps_the_article():
+    from collections import Counter
+    from app.core.consistency import _pick
+    assert _pick(Counter({"Cave King's Road": 1, "A Cave King's Road": 1})) == "A Cave King's Road"
+    assert _pick(Counter({"Cave King's Road": 1000, "A Cave King's Road": 1})) == "Cave King's Road"  # library wins

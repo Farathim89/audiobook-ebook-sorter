@@ -36,7 +36,7 @@ online source disagrees. The reason is in the notes on the right.</td><td>No</td
 <td>No</td><td>Read the note. Duplicates: <b>Choose which copy to keep</b>.</td></tr>
 <tr><td><b>Unknown</b></td><td>Not even a title.</td><td>No</td><td>Fill in the fields, or skip it.</td></tr>
 <tr><td><b>Skipped</b></td><td>You left it out (Delete key).</td><td>No</td><td>Delete again to bring it back.</td></tr>
-<tr><td><b>Sorted</b></td><td>Already done (hidden unless View &gt; Show sorted books).</td><td>No</td><td>-</td></tr>
+<tr><td><b>Sorted</b></td><td>Already done - only listed under <b>Sorted</b> in the sidebar, not under All.</td><td>No</td><td>-</td></tr>
 </table>
 <p>The right panel shows where each field came from: <i>tags</i>, <i>sidecar</i> (metadata.json / .opf),
 <i>filename</i>, <i>folder</i>, or an online source like <i>audible</i> or <i>anilist</i>. Fields from
@@ -60,7 +60,9 @@ audiobooks of light novels</td></tr>
 <tr><td><b>Review</b></td><td>Books without an author</td></tr>
 <tr><td><b>Duplicates</b></td><td>Extra copies (Tools &gt; Move duplicates) - the best copy stays</td></tr>
 <tr><td><b>Done</b></td><td>Originals after sorting (Move mode, or Tools &gt; Clear sorted originals), one folder
-per day; can empty itself to the Recycle Bin (Settings &gt; Sorting)</td></tr>
+per day; can empty itself to the Recycle Bin (Settings &gt; Sorting). Switch off <b>Keep old copies in Done</b>
+to not keep them at all: they go to the Recycle Bin, or are deleted for good on a drive without one (the sorted book
+is always complete first; undo then keeps the sorted copy). The status bar shows how big Done is.</td></tr>
 </table>
 <p><b>Audiobookshelf tip:</b> point a library at the kind folders (e.g. <i>...\\AudioBooks Sorted\\Audiobooks</i>),
 not at the sorted folder itself - otherwise it reads "Audiobooks" as the author.</p>
@@ -72,8 +74,17 @@ the folder moves to match.</li>
 <li><b>Tools &gt; Improve covers of sorted books</b>: finds books with no cover or a low-res one (under 600 px)
 and offers a bigger one - from inside the book, Audible, or the same edition by ISBN. Audiobook covers also go
 inside the .m4b. Old covers are kept (undo from History).</li>
-<li><b>Tools &gt; MP3 &rarr; M4B</b>: one chaptered file per audiobook while sorting.</li>
+<li><b>MP3 &rarr; M4B</b> (switch under Sort): audiobooks made of several files (mp3 ...) become one
+chaptered .m4b while sorting. Books that already are one .m4b are left alone.</li>
+<li><b>M4B &rarr; M4B</b> (switch under Sort): books that already are one .m4b get Audible's chapter names.
+<b>Settings &gt; Sorting &gt; M4B &rarr; M4B</b> picks how: <i>Keep audio</i> (fast, the sound is copied as it
+is) or <i>Re-encode AAC</i> (new AAC audio at the same bitrate - slow). In Move mode the original goes to the
+Done folder.</li>
 <li><b>Edit &gt; Mark selected as already sorted</b> (Ctrl+M): hide books your library already has.</li>
+</ul>
+<h3>Portable</h3>
+<p>Put a folder named <b>BookSorter-data</b> next to BookSorter.exe and everything the app saves - settings, history (undo), cache, ffmpeg and the window layout - stays in there, not in your user profile or the registry. Copy the two together to a USB stick or another PC. Delete the folder to go back to normal mode.</p>
+<ul>
 </ul>
 """
 

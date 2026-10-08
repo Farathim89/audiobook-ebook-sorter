@@ -23,3 +23,16 @@ def test_portable_folder_is_found_only_when_it_exists(tmp_path):
     assert portable_dir(tmp_path) is None
     (tmp_path / DATA_FOLDER).mkdir()
     assert portable_dir(tmp_path) == tmp_path / DATA_FOLDER
+
+
+def test_portable_paths_are_saved_relative_and_read_back(tmp_path, monkeypatch):
+    import app.config as cfg
+    data = tmp_path / "BookSorter-data"
+    data.mkdir()
+    monkeypatch.setattr(cfg, "PORTABLE", data)
+    f = cfg.Folders(state=data / "state", audio_sorted=tmp_path / "Sorted", protected=[])
+    cfg.save_folders(f, data / "settings.json")
+    import json
+    saved = json.loads((data / "settings.json").read_text(encoding="utf-8"))
+    assert saved["state"] == "state" and saved["audio_sorted"] == str(tmp_path / "Sorted")
+    assert cfg.load_folders(data / "settings.json").state == data / "state"

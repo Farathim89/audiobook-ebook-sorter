@@ -15,7 +15,7 @@ from .models import Book
 from .text import fold, name_key
 
 EXISTING_WEIGHT = 1000
-_SERIES_NOISE_RE = re.compile(r"(?i)^the\s+|\s+series$|\s*\((?:light novel|manga|comic)\)$|\s+light novel$")
+_SERIES_NOISE_RE = re.compile(r"(?i)^(?:the|an?)\s+|\s+series$|\s*\((?:light novel|manga|comic)\)$|\s+light novel$")
 
 
 def series_key(name: str) -> str:
@@ -48,7 +48,13 @@ def unify_names(books: list[Book], library_roots: list[Path]) -> None:
             series_votes[(fold(b.author), series_key(b.meta.series))][b.meta.series] += 1
     for b in books:
         if b.meta.series and b.author:
-            b.meta.series = series_votes[(fold(b.author), series_key(b.meta.series))].most_common(1)[0][0]
+            b.meta.series = _pick(series_votes[(fold(b.author), series_key(b.meta.series))])
+
+
+def _pick(votes: Counter) -> str:
+    """The most used spelling; on a tie the one with its article ('A Cave King's...' over 'Cave King's...').
+    A folder already in the library weighs most, so a sorted series never splits in two."""
+    return max(votes.items(), key=lambda kv: (kv[1], bool(re.match(r"(?i)(?:the|an?)\s", kv[0]))))[0]
 
 
 def _one_author_per_series(books: list[Book]) -> None:

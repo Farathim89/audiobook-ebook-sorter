@@ -49,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apply", action="store_true", help="really copy the books (asks first)")
     ap.add_argument("--move", action="store_true", help="with --apply: move instead of copy")
     ap.add_argument("--m4b", action="store_true", help="with --apply/--auto: multi-file audiobooks -> one .m4b")
+    ap.add_argument("--redo-m4b", choices=["copy", "aac"],
+                    help="with --apply/--auto: books that already are one .m4b get Audible's chapters "
+                         "(copy = keep the audio, aac = re-encode)")
     ap.add_argument("--to-m4b", metavar="FOLDER", type=Path, help="convert the audiobook(s) in FOLDER, no sorting")
     ap.add_argument("--out", type=Path, help="with --to-m4b: where to write (default: next to the folder)")
     ap.add_argument("--reorganize-books", action="store_true",
@@ -176,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
         return _fix_xhe(args, folders)
     if args.m4b:
         folders.to_m4b = True
+    if args.redo_m4b:
+        folders.redo_m4b, folders.m4b_codec = True, args.redo_m4b
     if args.auto:
         res = auto_sort(folders, processed, sources=args.sources or None)
         if res.run:
