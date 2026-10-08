@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 import re
 import shutil
 import subprocess
@@ -126,6 +127,38 @@ def _scaled(chapters: list[Chapter], runtime: float, total: float) -> list[Chapt
     out = [Chapter(c.start * k, c.end * k, c.title) for c in chapters]
     out[-1].end = total
     return out
+
+
+def chapters_in(path: Path) -> list[Chapter]:
+    """The chapters already inside an m4b (ffprobe), [] when none or no ffprobe."""
+    probe = find_tool("ffprobe")
+    if not probe:
+        return []
+    out = subprocess.run([probe, "-v", "error", "-show_chapters", "-of", "json", str(path)],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
+    try:
+        found = json.loads(out.stdout or "{}").get("chapters") or []
+    except ValueError:
+        return []
+    return [Chapter(float(c.get("start_time") or 0), float(c.get("end_time") or 0),
+                    ((c.get("tags") or {}).get("title") or "").strip()) for c in found]
+
+
+_GENERIC_CHAPTER_RE = re.compile(r"(?i)^(?:(?:chapter|ch\.?|kapitel|track|part|del|disc|cd|file)\s*)?[\divxlc]+\.?$|^$")
+SAME_CHAPTER_SECONDS = 5.0
+
+
+def chapters_are_good(existing: list[Chapter], audible: list[Chapter] | None = None) -> bool:
+    """Keep the book's own chapters (M4B -> M4B skips the file) when they have real names
+    ('Prologue', 'The Bound Demon' - not 'Chapter 3' / 'Track 01'), or when they are Audible's anyway
+    (same count, every start within a few seconds)."""
+    if len(existing) < 2:
+        return False
+    if audible and len(audible) == len(existing) and all(
+            abs(a.start - b.start) <= SAME_CHAPTER_SECONDS for a, b in zip(existing, audible)):
+        return True
+    named = sum(1 for c in existing if not _GENERIC_CHAPTER_RE.match(c.title))
+    return named >= 0.8 * len(existing)
 
 
 def chapters_from_audible(http: Http, asin: str, total: float) -> list[Chapter] | None:

@@ -208,3 +208,25 @@ def test_keep_done_off_uses_the_recycle_bin_when_there_is_one(tmp_path, monkeypa
     folders.keep_done = False
     Executor(folders, mode="move", redo_m4b=True).run(Planner(folders).plan(books))
     assert binned == ["Some Book.m4b"]
+
+
+def test_chapters_are_good():
+    from app.core.m4b import Chapter, chapters_are_good
+    def ch(*titles, step=600.0):
+        return [Chapter(i * step, (i + 1) * step, t) for i, t in enumerate(titles)]
+    assert chapters_are_good(ch("Opening Credits", "Prologue", "The Bound Demon", "Black Summoner", "Epilogue"))
+    assert not chapters_are_good(ch("Chapter 1", "Chapter 2", "Chapter 3", "Chapter 4"))
+    assert not chapters_are_good(ch("Track 01", "Track 02", "03"))
+    assert not chapters_are_good(ch("Whole book"))                        # one chapter is no chapters
+    audible = ch("Chapter 1", "Chapter 2", "Chapter 3")
+    same = [Chapter(c.start + 2, c.end + 2, c.title) for c in audible]
+    assert chapters_are_good(same, audible)                               # already Audible's: nothing to gain
+
+
+def test_m4b_to_m4b_leaves_good_chapters_alone(tmp_path, monkeypatch):
+    from app.core import m4b
+    folders, books, calls = _one_m4b_book(tmp_path, monkeypatch)
+    monkeypatch.setattr(m4b, "chapters_in", lambda p: [m4b.Chapter(0, 50, "Prologue"), m4b.Chapter(50, 100, "The Gate")])
+    Executor(folders, mode="move", redo_m4b=True).run(Planner(folders).plan(books))
+    assert calls == [] and next((tmp_path / "out").rglob("*.m4b")).read_bytes() == b"original"
+    assert not (tmp_path / "done").exists()                               # just moved: no old copy

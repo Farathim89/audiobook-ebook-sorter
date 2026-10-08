@@ -179,6 +179,8 @@ class Executor:
                 return None, "", set()
             total = m4b.duration(files[0])
             chapters = m4b.chapters_from_audible(self.http, book.meta.asin, total) if book.meta.asin else []
+            if chapters and m4b.chapters_are_good(m4b.chapters_in(files[0]), chapters):
+                chapters = []  # its own chapters are fine: no new file just for the same chapters
             # xHE-AAC is never re-encoded by ffmpeg (dropouts): the xHE fix (Windows' decoder) does it
             encode = self.folders.m4b_codec == "aac" and not m4b.is_xhe_aac(files[0])
             if not chapters and not encode:
