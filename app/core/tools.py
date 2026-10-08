@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Callable
 
 FFMPEG_ZIP = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-TOOLS_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "BookSorter" / "ffmpeg"
+from ..portable import PORTABLE
+TOOLS_DIR = (PORTABLE / "ffmpeg" if PORTABLE is not None
+             else Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "BookSorter" / "ffmpeg")
 _HERE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
 
 

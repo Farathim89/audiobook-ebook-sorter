@@ -41,6 +41,7 @@ from ..core.compare import HAVE, HAVE_NOT, apply_compare, libraries_of, plan_com
 from ..providers.abs import AbsClient
 from .dialogs import DuplicateDialog, EditSortedDialog, HistoryDialog, SettingsDialog
 from .help import HelpDialog
+from ..portable import ui_settings
 from .sidebar import Sidebar, tool_card
 from . import theme
 from .workers import Worker
@@ -207,7 +208,7 @@ class MainWindow(QMainWindow):
 
     def _restore_filters(self) -> None:
         """The search text, state filter and View > Show sorted books from last time."""
-        saved = QSettings("BookSorter", "BookSorter")
+        saved = ui_settings()
         self.search.setText(str(saved.value("view/search", "") or ""))
         state = str(saved.value("view/state", "all") or "all")
         keys = [k for _, k in STATE_FILTERS]
@@ -217,7 +218,7 @@ class MainWindow(QMainWindow):
 
     def _fit_to_screen(self) -> None:
         """Restore the last window size, or fit the screen (the old fixed 1500x860 was too tall on scaled displays)."""
-        geo = QSettings("BookSorter", "BookSorter").value("window/geometry")
+        geo = ui_settings().value("window/geometry")
         if geo is not None and self.restoreGeometry(geo):
             return
         avail = self.screen().availableGeometry()
@@ -582,7 +583,7 @@ class MainWindow(QMainWindow):
             lambda i: self.sidebar.select_filter(STATE_FILTERS[i][1]))
         self.sidebar.select_filter(STATE_FILTERS[self.state_filter.currentIndex()][1])
         # the user's column widths / sort column and the details panel width from last time
-        saved = QSettings("BookSorter", "BookSorter")
+        saved = ui_settings()
         if (state := saved.value("table/header")) is not None:
             header.restoreState(state)
         if (state := saved.value("window/splitter")) is not None:
@@ -1109,7 +1110,7 @@ class MainWindow(QMainWindow):
                 self._replan()
 
     def closeEvent(self, event) -> None:
-        saved = QSettings("BookSorter", "BookSorter")
+        saved = ui_settings()
         saved.setValue("window/geometry", self.saveGeometry())
         saved.setValue("table/header", self.table.horizontalHeader().saveState())
         saved.setValue("window/splitter", self.split.saveState())

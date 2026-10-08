@@ -7,7 +7,11 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-SETTINGS_FILE = Path(os.environ.get("APPDATA") or Path.home()) / "BookSorter" / "settings.json"
+from .portable import PORTABLE
+
+# portable mode (a BookSorter-data folder next to the exe): everything lives in there
+SETTINGS_FILE = (PORTABLE / "settings.json" if PORTABLE is not None
+                 else Path(os.environ.get("APPDATA") or Path.home()) / "BookSorter" / "settings.json")
 DEFAULT_BASE = Path.home() / "Book Sorter"
 
 
@@ -26,7 +30,8 @@ class Folders:
     move_originals: bool = False  # sorting MOVES the originals out of Incoming (else copies, keeps them)
     done_days: int = 0  # Done\<day> folders older than this go to the Recycle Bin (0 = keep forever)
     # Online-lookup cache, run history (undo) and the processed list.
-    state: Path = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "BookSorter"
+    state: Path = (PORTABLE / "state" if PORTABLE is not None
+                   else Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "BookSorter")
     audible_region: str = "us"
     storytel_locale: str = "se"   # Storytel is asked for Swedish-looking books and when Audible finds nothing
     # Extra online sources (like Audiobookshelf's): they only fill gaps - description, cover, year, ISBN.

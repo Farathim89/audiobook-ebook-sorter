@@ -37,7 +37,17 @@ Sorted\Books\Light Novels\...   Sorted\Books\EBooks\...   Sorted\Books\Comics\..
 |---|---|
 | ![Tools](docs/screenshots/tools-cobblestone.png) | ![Themes](docs/screenshots/themes-wood.png) |
 
-## Run it
+## Download
+
+Grab the latest [release](https://github.com/Farathim89/audiobook-ebook-sorter/releases):
+
+- **`BookSorter-portable.zip`** - unzip anywhere (USB stick too) and run `BookSorter.exe`. Everything it saves
+  (settings, history/undo, cache, ffmpeg, window layout) stays in the `BookSorter-data` folder next to it.
+- **`BookSorter.exe`** - the same app on its own; it keeps its settings in your user profile.
+
+No install and no Python needed. Windows 10/11; online lookups need internet.
+
+## Run from source
 
 Windows 10/11, Python 3.10+.
 
