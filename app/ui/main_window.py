@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QSettings, QThreadPool, QTime, QTimer, Qt
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QSizePolicy)
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QPlainTextEdit, QSizePolicy)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QHeaderView, QScrollArea, QStackedWidget,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QProgressBar,
@@ -375,6 +375,43 @@ class MainWindow(QMainWindow):
                 f"this restore is saved in\n{res[0]}"), "Writing progress to Audiobookshelf…")
 
         self._run(lambda w: plan_restore(client, Path(path)), confirm, "Finding the books in your libraries…")
+
+    def check_abs(self) -> None:
+        f = self.folders
+        if not f.abs_url or not f.abs_api_key:
+            QMessageBox.information(self, "Audiobookshelf", "Set the Audiobookshelf address and API key first:\n"
+                                    "Settings > Online. (In Audiobookshelf: Settings > API Keys.)")
+            return
+        from ..core.abs_check import check_abs, report  # noqa: PLC0415
+        client = AbsClient(f.abs_url, f.abs_api_key)
+
+        def done(result):
+            total, found = result
+            text = report(total, found)
+            dlg = QDialog(self)
+            n = sum(len(v) for v in found.values())
+            dlg.setWindowTitle(f"Audiobookshelf - {total} books, " + (f"{n} things to look at" if n else "all fine"))
+            dlg.resize(1000, 640)
+            v = QVBoxLayout(dlg)
+            box = QPlainTextEdit(text)
+            box.setReadOnly(True)
+            box.setLineWrapMode(QPlainTextEdit.NoWrap)
+            v.addWidget(box, 1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            save = buttons.addButton("Save report…", QDialogButtonBox.ActionRole)
+
+            def save_report():
+                from datetime import datetime  # noqa: PLC0415
+                path = f.state / "logs" / f"abs-check-{datetime.now():%Y%m%d-%H%M%S}.txt"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+                os.startfile(str(path))
+            save.clicked.connect(save_report)
+            buttons.rejected.connect(dlg.reject)
+            v.addWidget(buttons)
+            dlg.exec()
+
+        self._run(lambda w: check_abs(client, lambda t: w.report(0, 0, t)), done, "Reading Audiobookshelf…")
 
     def sort_collections(self) -> None:
         f = self.folders
@@ -953,6 +990,9 @@ class MainWindow(QMainWindow):
                  "Find files…", self.fix_xhe),
                 ("Sort collections", "Put your Audiobookshelf collections in reading order (needs the API key "
                  "in Settings).", "Sort…", self.sort_collections),
+                ("Check Audiobookshelf", "Read every library and list what looks off: missing books, the same "
+                 "book twice, a series or author spelled two ways, translators as authors, '(Light Novel)' in "
+                 "names. Only reads.", "Check…", self.check_abs),
                 ("Back up listening progress", "Save your Audiobookshelf progress (finished books, positions, "
                  "bookmarks) - do it before you move books between libraries.", "Back up…", self.backup_abs_progress),
                 ("Restore listening progress", "Put progress from a backup back - also when the books are in "
