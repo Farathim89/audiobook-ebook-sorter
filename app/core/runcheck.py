@@ -77,7 +77,8 @@ def check_run(state: Path, run_id: str) -> tuple[int, list[Finding]]:
         target = d.get("target")
         if series and target:
             t = Path(target)
-            lib = os.path.normcase(str(t.parents[3])) if len(t.parents) > 3 else ""
+            # per kind folder: a manga and its light novel are two series folders on purpose
+            lib = os.path.normcase(str(t.parents[2])) if len(t.parents) > 2 else ""
             key = (lib, fold(series))
             series_dirs[key].add(os.path.normcase(str(t.parent)))
             series_authors[key].add(os.path.normcase(t.parent.parent.name))

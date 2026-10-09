@@ -31,7 +31,57 @@ def series_key(name: str) -> str:
     return fold(name)
 
 
+def _root_kind(root: Path) -> str | None:
+    n = root.name.lower()
+    if "light novel" in n:
+        return "light novel"
+    if "manga" in n or "comic" in n:
+        return "comic"
+    if "audiobook" in n or "ebook" in n:
+        return "normal"
+    return None  # a top folder: its children are kind folders or authors - no kind from it
+
+
+def follow_the_library(books: list[Book], library_roots: list[Path]) -> None:
+    """What the library (and staging) already says about a series: its kind ('The Villainess...' lives in
+    Audiobooks - Light Novels: its new volumes are light novels too) and, for a book that came without a
+    series, the series and number its title has there ('I Have a Secret' = The Yoru Sumino Collection #4)."""
+    from .metadata import update_status  # noqa: PLC0415
+    from .models import BookType  # noqa: PLC0415
+    kinds: dict[tuple[str, str], str] = {}
+    titles: dict[tuple[str, str], tuple[str, float]] = {}
+    for root in library_roots:
+        kind = _root_kind(root)
+        for author_dir in _subdirs(root):
+            a = fold(author_dir.name)
+            for d in _subdirs(author_dir):
+                vols = [v for v in _subdirs(d) if re.match(r"^\d+(?:\.\d+)? - ", v.name)]
+                if not vols:
+                    continue
+                name = re.sub(r"\s*\((?:Manga|Comic)\)$", "", d.name)
+                if kind:
+                    kinds.setdefault((a, series_key(name)), kind)
+                for v in vols:
+                    num, title = v.name.split(" - ", 1)
+                    titles.setdefault((a, fold(title)), (name, float(num)))
+    for b in books:
+        if not b.author or b.type is BookType.COMIC or b.sources.get("series") == "manual":
+            continue
+        a = fold(b.author)
+        if not b.meta.series and b.meta.title and (hit := titles.get((a, fold(b.meta.title)))):
+            b.meta.series, b.meta.series_index = hit
+            b.sources["series"] = b.sources["series_index"] = "library"
+            b.notes.append(f"series from your library: {hit[0]} #{hit[1]:g}")
+        if b.meta.series and (kind := kinds.get((a, series_key(b.meta.series)))) in ("light novel", "normal"):
+            ln = kind == "light novel"
+            if b.light_novel != ln:
+                b.light_novel = ln
+                b.notes.append(f"kind as in your library: {'light novel' if ln else 'not a light novel'}")
+        update_status(b)
+
+
 def unify_names(books: list[Book], library_roots: list[Path]) -> None:
+    follow_the_library(books, library_roots)
     author_votes: dict[str, Counter] = defaultdict(Counter)
     series_votes: dict[tuple[str, str], Counter] = defaultdict(Counter)
 

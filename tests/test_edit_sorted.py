@@ -90,18 +90,18 @@ def test_case_only_rename_of_a_sorted_light_novel_and_undo(tmp_path):
     from app.core.text import clean_title
     assert clean_title("Black Summoner, Vol. 1 (light Novel)") == "Black Summoner, Vol. 1 (Light Novel)"
     f = Folders(books_sorted=tmp_path / "books", state=tmp_path / "state", protected=[])
-    old = f.books_sorted / "Light Novels/Doufu Mayoi/Black Summoner/1 - Black Summoner, Vol. 1 (light Novel)"
+    old = f.books_sorted / "Light Novels/Doufu Mayoi/Black Summoner/1 - Black summoner, Vol. 1"
     old.mkdir(parents=True)
-    (old / "Black Summoner, Vol. 1 (light Novel).epub").write_bytes(b"not a real epub")
-    (old / "metadata.opf").write_text(OPF.replace("Earthsea Cycle Book 5", "Black Summoner, Vol. 1 (light Novel)")
+    (old / "Black summoner, Vol. 1.epub").write_bytes(b"not a real epub")
+    (old / "metadata.opf").write_text(OPF.replace("Earthsea Cycle Book 5", "Black summoner, Vol. 1")
                                       .replace("Earthsea Cycle", "Black Summoner").replace("Ursula K. Le Guin", "Doufu Mayoi")
                                       .replace('content="5"', 'content="1"'),
                                       encoding="utf-8")
     before = _files(tmp_path / "books")
-    run_id, new = edit_sorted_book(f, old, {"title": "Black Summoner, Vol. 1 (Light Novel)"})
+    run_id, new = edit_sorted_book(f, old, {"title": "Black Summoner, Vol. 1"})
     assert _files(tmp_path / "books") == [
-        "Light Novels/Doufu Mayoi/Black Summoner/1 - Black Summoner, Vol. 1 (Light Novel)/Black Summoner, Vol. 1 (Light Novel).epub",
-        "Light Novels/Doufu Mayoi/Black Summoner/1 - Black Summoner, Vol. 1 (Light Novel)/metadata.opf"]
+        "Light Novels/Doufu Mayoi/Black Summoner/1 - Black Summoner, Vol. 1/Black Summoner, Vol. 1.epub",
+        "Light Novels/Doufu Mayoi/Black Summoner/1 - Black Summoner, Vol. 1/metadata.opf"]
     undo(next(r for r in list_runs(f.state / "history") if r.run_id == run_id))
     assert _files(tmp_path / "books") == before
 

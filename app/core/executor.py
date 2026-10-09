@@ -225,6 +225,7 @@ class Executor:
                                 if not mv.in_place:
                                     self._keep_tags(mv.dst, journal)
                         self._embed_cover(book, moves, m4b_file, content, journal)
+                self._fix_abs_metadata(book, target, moves, journal)
                 edited = [m4b_file] if m4b_file else [mv.dst for mv in moves if not mv.in_place]
                 edited = [f for f in edited if f and f.suffix.lower() in (".m4b", ".m4a", ".mp3", ".flac", ".ogg")]
                 if len(edited) <= 5 and (self.folders.write_tags or m4b_file):
@@ -402,6 +403,26 @@ class Executor:
         else:
             os.remove(src)
             journal.write(op="delete", src=str(src), size=size, how="deleted for good")
+
+    def _fix_abs_metadata(self, book: Book, target: Path, moves, journal: Journal) -> None:
+        """The download's metadata.json came along - ABS reads it before the tags: it gets what was
+        decided (the original is saved; undo writes it back)."""
+        from .absmeta import corrected, dumps, read_abs_json  # noqa: PLC0415
+        from .history import keep_old_contents  # noqa: PLC0415
+        path = target / "metadata.json"
+        if not any(not mv.in_place and os.path.normcase(str(mv.dst)) == os.path.normcase(str(path)) for mv in moves):
+            return  # not one we brought here
+        original = read_abs_json(path)
+        if original is None:
+            return
+        new = corrected(original, book.meta)
+        if new == original:
+            return
+        self._step("writing metadata.json (what ABS reads first)")
+        keep_old_contents(journal, self.folders.state / "replaced" / journal.run_id, path)
+        data = dumps(new)
+        path.write_bytes(data)
+        journal.write(op="update", dst=str(path), size=len(data))
 
     def _create(self, path: Path, content: bytes, journal: Journal) -> None:
         if path.exists():

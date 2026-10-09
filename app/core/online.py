@@ -526,8 +526,12 @@ class OnlineLookup:
             return
         if info:
             base = f"{m.series}, Vol. {m.series_index:g}"
-            if info.get("title") and book.sources.get("title") != "manual":
-                book.override(Metadata(title=f"{base}: {info['title']}"), "fandom")
+            own = info.get("title") or ""
+            # 'Hideyuki Kikuchi's Vampire Hunter D: Volume 1' is the series again, not the volume's own title
+            if own and (fold(main_title(m.series)) in fold(own) or re.search(r"(?i)\bvol(?:ume)?\.?\s*\d", own)):
+                own = ""
+            if own and book.sources.get("title") != "manual":
+                book.override(Metadata(title=f"{base}: {own}"), "fandom")
             book.absorb(Metadata(year=info.get("year"), isbn=info.get("isbn")), "fandom")
             update_status(book)
 

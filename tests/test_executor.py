@@ -375,3 +375,33 @@ def test_audiobook_and_ebook_in_one_folder_never_lose_files(tmp_path, monkeypatc
     assert result.count("done") == len(books), [r.detail for r in result.results if r.status != "done"]
     for name in ("book info.txt", "cover-adb.jpg"):                       # the audiobook kept its files
         assert len(list((tmp_path / "out").rglob(name))) == 6
+
+
+def test_downloaded_metadata_json_is_corrected_and_undo_puts_it_back(tmp_path):
+    import json
+    for mode in ("copy", "move"):
+        base = tmp_path / mode
+        src = base / "in"
+        d = src / "Saint" / "Volume 01"
+        d.mkdir(parents=True)
+        (d / "book.mp3").write_bytes(b"a" * 10)
+        wrong = {"title": "The Saint's Magic Power is Omnipotent, Vol. 01", "authors": ["Veronica Taylor"],
+                 "narrators": ["Yuka Tachibana"], "series": ["The Saint's Magic Power is Omnipotent #01"],
+                 "chapters": [{"id": 0, "start": 0, "end": 5, "title": "Prologue"}]}
+        original = json.dumps(wrong).encode("utf-8")
+        (d / "metadata.json").write_bytes(original)
+        (d / "book info.txt").write_text("By: Yuka Tachibana\nNarrated by: Veronica Taylor\n", encoding="utf-8")
+        folders = Folders(audio_sorted=base / "out", books_sorted=base / "outb", review=base / "rev",
+                          state=base / "state", protected=[])
+        books = load_books([src])
+        result = Executor(folders, mode=mode).run(Planner(folders).plan(books))
+        assert result.count("done") == 1, result.results
+        target = next((base / "out").rglob("metadata.json"))
+        fixed = json.loads(target.read_text(encoding="utf-8"))
+        assert fixed["authors"] == ["Yuka Tachibana"] and fixed["narrators"] == ["Veronica Taylor"]
+        assert fixed["series"] == ["The Saint's Magic Power is Omnipotent #1"] and fixed["chapters"] == wrong["chapters"]
+        run = next(r for r in list_runs(folders.state / "history") if r.run_id == result.run_id)
+        res = undo(run)
+        assert not res.skipped, res.skipped
+        assert (d / "metadata.json").read_bytes() == original  # exactly the uploader's file again
+        assert not target.exists()

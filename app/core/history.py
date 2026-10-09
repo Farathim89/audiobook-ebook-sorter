@@ -93,6 +93,15 @@ def undo(run: RunInfo, processed: Processed | None = None) -> UndoResult:
                     continue
                 restore_tags(dst, saved.read_bytes())
                 continue
+            if op == "content":
+                # a file the app rewrote (a metadata.json): its old contents back, before it moves back
+                saved = Path(e["saved"])
+                if dst is None or not dst.exists() or not saved.exists():
+                    result.skipped.append(f"old contents not put back (file or saved copy gone): {dst}")
+                    continue
+                dst.write_bytes(saved.read_bytes())
+                result.restored += 1
+                continue
             if op == "delete":
                 where = "in the Recycle Bin" if e.get("how") == "recycle bin" else "deleted for good"
                 result.skipped.append(f"{where}, can't bring back: {e.get('src')}")
@@ -104,7 +113,7 @@ def undo(run: RunInfo, processed: Processed | None = None) -> UndoResult:
                     result.skipped.append(f"kept - its original was deleted when sorting: {dst}")
                     continue
                 size = final_size.get(e["dst"], e.get("size"))
-                if size is not None and dst.stat().st_size != size:
+                if size is not None and dst.stat().st_size not in (size, e.get("size")):  # rewritten + put back
                     result.skipped.append(f"changed since, kept: {dst}")
                     continue
                 os.remove(dst)
@@ -211,6 +220,15 @@ class Processed:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text("".join(f"{k}\n" for k in sorted(self.keys)), encoding="utf-8")
+
+
+def keep_old_contents(journal: Journal, parked: Path, path: Path) -> None:
+    """Save a file before the app rewrites it (a metadata.json) and journal it - undo writes it back."""
+    folder = parked / "contents"
+    folder.mkdir(parents=True, exist_ok=True)
+    saved = folder / f"{len(list(folder.iterdir())) + 1:05d}{path.suffix}"
+    saved.write_bytes(path.read_bytes())
+    journal.write(op="content", dst=str(path), saved=str(saved))
 
 
 def keep_old_tags(journal: Journal, parked: Path, path: Path, kept: set | None = None) -> None:

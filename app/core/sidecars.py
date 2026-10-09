@@ -3,7 +3,8 @@
 Audiobooks: desc.txt (description), reader.txt (narrators), cover.jpg
 Ebooks/comics: metadata.opf (only the MAIN author - epubs often list the illustrator 2nd)
 
-Never write metadata.json: that's ABS's own file and it overrides everything.
+Never write a NEW metadata.json (ABS's own file, it overrides everything) - but one that came with the
+download is corrected (executor._fix_abs_metadata), else ABS shows the uploader's mistakes.
 """
 from __future__ import annotations
 

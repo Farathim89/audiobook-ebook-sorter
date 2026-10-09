@@ -101,7 +101,23 @@ class Folders:
             roots += [self.audio_sorted / self.audio_ln_dir, self.audio_sorted / self.audio_dir]
         if self.split_books:
             roots += [self.books_sorted / d for d in self.kind_dirs]
-        return roots + [self.books_sorted]
+        roots.append(self.books_sorted)
+        # your libraries too (only READ - their spelling, series and kind folders count): 'Toradora!'
+        for lib in self.protected:
+            if "podcast" in str(lib).lower() or not Path(lib).is_dir():
+                continue
+            roots.append(Path(lib))
+            try:
+                roots += [d for d in Path(lib).iterdir() if d.is_dir() and _kind_dir_name(d.name)]
+            except OSError:
+                pass
+        return roots
+
+
+def _kind_dir_name(name: str) -> bool:
+    """'Audiobooks - Light Novels', 'Manga', 'EBooks'... (a library's kind folder, not an author)."""
+    n = name.lower()
+    return any(k in n for k in ("light novel", "manga", "comic", "ebook", "audiobook")) or n == "books"
 
 
 def load_folders(path: Path = SETTINGS_FILE) -> Folders:

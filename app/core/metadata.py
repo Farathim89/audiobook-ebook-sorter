@@ -173,6 +173,14 @@ def _tidy(book: Book) -> None:
             or re.match(r"(?i)^(?:vol(?:ume)?\.?|book|part|tome|v)\s*\d+(?:\.\d+)?$", a) for a in m.authors):
         m.authors = []  # 'Audiobooks' / '-=Books Review=-' / 'Volume 12' is a folder, not a person
         book.sources.pop("authors", None)
+    if not m.series and m.title and book.folder is not None and book.sources.get("title") not in GUESSED \
+            and (hit := re.match(r"(?i)^(.+?)\s*[-–,]\s*vol(?:ume)?\.?\s*0*(\d+(?:\.\d+)?)\b", book.folder.name)) \
+            and fold(hit.group(1)) and (fold(hit.group(1)).startswith(fold(m.title))
+                                        or fold(m.title).startswith(fold(hit.group(1)))):
+        # 'Toradora! - Vol. 10 {Courtney Shaw}' (no author folder) with the title tag 'Toradora': series #10
+        m.series, m.series_index = hit.group(1).strip(), float(hit.group(2))
+        m.title = f"{m.series}, Vol. {format_index(m.series_index)}"
+        book.sources["series"] = book.sources["series_index"] = book.sources.get("title", "tags")
     if m.series and book.sources.get("series") in GUESSED and (vol := parse_volume(m.series)) \
             and not re.match(r"(?i)^(?:vol(?:ume)?\.?|book|part|tome|v)\s*\d", m.series):
         # the book's own folder 'Constellations, Vol. 01' taken for the series: it is 'Constellations' #1
@@ -381,7 +389,7 @@ def strip_tags(book: Book) -> None:
         value = getattr(m, field)
         if value and _GENRE_SUBTITLE_RE.search(value):
             value = _GENRE_SUBTITLE_RE.sub("", value).strip()
-        if value and book.type is BookType.AUDIO and _LN_TAG_RE.search(value):
+        if value and _LN_TAG_RE.search(value):  # audiobooks and ebooks ('I Had That Same Dream Again (Novel)')
             book.light_novel = True
             value = _LN_TAG_RE.sub("", value)
         if value and _GENRE_TAG_RE.search(value):

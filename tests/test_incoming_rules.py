@@ -246,3 +246,16 @@ def test_a_less_damaged_new_copy_replaces_only_when_clearly_better(tmp_path, mon
         monkeypatch.setattr(m4b, "damaged_packets", lambda p, c=None, n=new_count: 56 if "sorted" in p.parts else n)
         got = replace_damaged_copies(f, SimpleNamespace(targets={book: old}), [book])
         assert (got == [book]) is replaced
+
+
+def test_new_books_follow_the_library(tmp_path):
+    from app.core.consistency import follow_the_library
+    lib = tmp_path / "Audiobooks - Light Novels"
+    (lib / "Kaye Ng" / "The Villainess Is an SS+ Rank Adventurer" / "1 - The Villainess Is an SS+ Rank Adventurer").mkdir(parents=True)
+    (lib / "Yoru Sumino" / "The Yoru Sumino Collection" / "4 - I Have a Secret").mkdir(parents=True)
+    villainess = _book("The Villainess Is an SS+ Rank Adventurer, Vol. 2", "The Villainess Is an SS+ Rank Adventurer", 2,
+                       ["Kaye Ng"])
+    secret = _book("I Have a Secret", None, None, ["Yoru Sumino"])
+    follow_the_library([villainess, secret], [lib])
+    assert villainess.light_novel
+    assert (secret.meta.series, secret.meta.series_index, secret.light_novel) == ("The Yoru Sumino Collection", 4.0, True)
