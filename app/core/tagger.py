@@ -20,7 +20,7 @@ from mutagen.id3 import ID3, MVIN, MVNM, TALB, TCOM, TDRC, TIT2, TPE1, TPE2, TXX
 from mutagen.mp4 import MP4, MP4FreeForm
 
 from ..readers.opf import local
-from .metadata import format_index
+from .metadata import format_index, series_number
 from .models import AUDIO_EXTS, Book, BookType
 
 log = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def _values(book: Book, whole_book: bool) -> dict[str, str]:
     m = book.meta
     v = {"album": m.title, "albumartist": book.author, "artist": ", ".join(m.authors),
          "narrator": ", ".join(m.narrators), "series": m.series,
-         "series_part": format_index(m.series_index) if m.series and m.series_index is not None else None,
+         "series_part": series_number(book) if m.series else None,  # '1-4' for a box set
          "asin": m.asin, "year": str(m.year) if m.year else None}
     if whole_book:
         v["title"] = m.title
@@ -141,3 +141,79 @@ def _epub_series(path: Path, series: str, index: float | None) -> bool:
             out.writestr(info, data, compress_type=zipfile.ZIP_STORED if info.filename == "mimetype" else info.compress_type)
     os.replace(tmp, path)
     return True
+
+
+# -- old tags, for undo ---------------------------------------------------------
+def _epub_opf_name(z: zipfile.ZipFile) -> str:
+    container = ET.fromstring(z.read("META-INF/container.xml"))
+    return next(el.attrib["full-path"] for el in container.iter() if local(el.tag) == "rootfile")
+
+
+def tag_snapshot(path: Path) -> bytes | None:
+    """Everything write_tags / the cover embedding may change in this file, to put back on undo:
+    all its tags (with the cover inside) - or, for an epub, its .opf. None when there is nothing to keep."""
+    import pickle  # noqa: PLC0415
+    try:
+        if path.suffix.lower() == ".epub":
+            with zipfile.ZipFile(path) as z:
+                name = _epub_opf_name(z)
+                return pickle.dumps(("epub-opf", name, z.read(name)))
+        if path.suffix.lower() == ".mp3":  # ID3 straight: mutagen.File gives up on odd mp3 frames
+            from mutagen.id3 import ID3, ID3NoHeaderError  # noqa: PLC0415
+            try:
+                return pickle.dumps(("id3", ID3(path)))
+            except ID3NoHeaderError:
+                return pickle.dumps(("id3", None))
+        f = mutagen.File(path)
+        if f is None:
+            return None
+        return pickle.dumps(("tags", f.tags))
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not keep the old tags of %s: %s", path, e)
+        return None
+
+
+def restore_tags(path: Path, snapshot: bytes) -> None:
+    """Put the tags from tag_snapshot back (raises OSError when it can't)."""
+    import pickle  # noqa: PLC0415
+    kind, *rest = pickle.loads(snapshot)  # noqa: S301 - our own file from this app's state folder
+    try:
+        if kind == "epub-opf":
+            name, data = rest
+            with zipfile.ZipFile(path) as z:
+                entries = [(info, z.read(info.filename)) for info in z.infolist()]
+            tmp = path.with_name(path.name + ".untagging")
+            with zipfile.ZipFile(tmp, "w") as out:
+                for info, old in entries:
+                    out.writestr(info, data if info.filename == name else old,
+                                 compress_type=zipfile.ZIP_STORED if info.filename == "mimetype" else info.compress_type)
+            os.replace(tmp, path)
+            return
+        (tags,) = rest
+        if kind == "id3":
+            from mutagen.id3 import ID3, ID3NoHeaderError  # noqa: PLC0415
+            if tags is None:
+                try:
+                    ID3(path).delete(path)
+                except ID3NoHeaderError:
+                    pass
+                return
+            tags.save(path)  # the whole old ID3 block, as it was
+            return
+        f = mutagen.File(path)
+        if f is None:
+            raise OSError(f"not a tagged audio file any more: {path}")
+        if tags is None:
+            if f.tags is not None:
+                f.delete()
+            return
+        if f.tags is None:
+            f.add_tags()
+        f.tags.clear()
+        for key in tags.keys():
+            f.tags[key] = tags[key]
+        f.save()
+    except OSError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise OSError(f"could not put the old tags back into {path}: {e}") from e

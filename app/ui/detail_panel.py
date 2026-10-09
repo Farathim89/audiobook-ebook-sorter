@@ -27,6 +27,7 @@ SearchFn = Callable[[Book, str], list[Candidate]]
 
 class DetailPanel(QScrollArea):
     edited = Signal(object)  # the Book whose metadata changed
+    ask_ai = Signal(object)  # the Book to ask the AI about now
     resolve_duplicates = Signal(object)
 
     def __init__(self, search: SearchFn):
@@ -103,6 +104,27 @@ class DetailPanel(QScrollArea):
         buttons.addWidget(self.b_reset)
         buttons.addStretch()
         form.addRow(buttons)
+        layout.addWidget(box)
+
+        # -- the AI's answer (Settings > AI) --
+        box = self.ai_box = QGroupBox("AI")
+        v = QVBoxLayout(box)
+        self.ai_text = QLabel()
+        self.ai_text.setWordWrap(True)
+        self.ai_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        v.addWidget(self.ai_text)
+        row = QHBoxLayout()
+        self.b_ai_accept = QPushButton("Accept")
+        self.b_ai_accept.setObjectName("primary")
+        self.b_ai_accept.setToolTip("Use the AI's answer - like Save changes, and the app learns it as a rule")
+        self.b_ai_accept.clicked.connect(self._accept_ai)
+        self.b_ai_ask = QPushButton("Ask AI")
+        self.b_ai_ask.setToolTip("Ask the AI about this book now (Settings > AI)")
+        self.b_ai_ask.clicked.connect(lambda: self.book and self.ask_ai.emit(self.book))
+        row.addWidget(self.b_ai_accept)
+        row.addWidget(self.b_ai_ask)
+        row.addStretch()
+        v.addLayout(row)
         layout.addWidget(box)
 
         # -- online matches --
@@ -188,7 +210,31 @@ class DetailPanel(QScrollArea):
             except ValueError:
                 self.files.addItem(str(f))
         self.notes.setText("\n".join(book.notes + (problems or [])))
+        self._show_ai(book)
         self._load_cover(book)
+
+    def _show_ai(self, book: Book) -> None:
+        from ..core.ai import summary  # noqa: PLC0415
+        a = book.ai or {}
+        used = bool(a) and not a.get("rejected") and "ai" in book.sources.values()
+        if not a:
+            self.ai_text.setText("Not asked. The AI is asked about unsure books when it is on (Settings > AI).")
+        elif a.get("rejected"):
+            self.ai_text.setText(f"Answer not used: {a['rejected']}")
+        else:
+            self.ai_text.setText(("✔ Used: " if used else "Suggests: ") + summary(a)
+                                 + f"\n{a.get('confidence', 0):.0%} sure - {a.get('reason', '')}")
+        self.b_ai_accept.setVisible(bool(a) and not a.get("rejected") and not used)
+
+    def _accept_ai(self) -> None:
+        if not self.book or not self.book.ai:
+            return
+        import copy  # noqa: PLC0415
+        from ..core.ai import use_answer  # noqa: PLC0415
+        from ..core.rules import book_kind  # noqa: PLC0415
+        self.before_edit = (copy.deepcopy(self.book.meta), book_kind(self.book))
+        use_answer(self.book, self.book.ai)
+        self.edited.emit(self.book)
 
     def _show_candidates(self, candidates: list[Candidate]) -> None:
         self.matches.clear()
@@ -204,6 +250,9 @@ class DetailPanel(QScrollArea):
         if not self.book:
             return
         split = lambda s: [x.strip() for x in s.split(";") if x.strip()]  # noqa: E731
+        import copy  # noqa: PLC0415
+        from ..core.rules import book_kind  # noqa: PLC0415
+        self.before_edit = (copy.deepcopy(self.book.meta), book_kind(self.book))
         edit_book(self.book,
                   title=self.f_title.text().strip(),
                   authors=split(self.f_authors.text()),

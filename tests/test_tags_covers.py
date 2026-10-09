@@ -7,7 +7,7 @@ from app.config import Folders
 from app.core.covers import extract_cover
 from app.core.executor import Executor
 from app.core.history import list_runs, undo
-from app.core.models import Book, BookType, Metadata
+from app.core.models import Book, BookType, Metadata, Status
 from app.core.planner import Planner
 from app.core.tagger import write_tags
 from app.readers.audio import read_tags
@@ -211,3 +211,54 @@ def test_embed_cover_only_when_bigger(tmp_path):
     assert m4b.embed_cover_if_bigger(f, _jpeg(2400, 2400))
     assert not m4b.embed_cover_if_bigger(f, _jpeg(1000, 1000))
     assert bytes(MP4(f).tags["covr"][0]) == _jpeg(2400, 2400)
+
+
+def test_undo_puts_the_old_tags_back_mp3_and_epub(tmp_path):
+    """Move mode re-tags your ORIGINAL files: undo must give them back exactly as they were."""
+    src = tmp_path / "in" / "Frank Herbert" / "Dune"
+    src.mkdir(parents=True)
+    mp3, epub_dir = src / "Dune.mp3", tmp_path / "in2" / "Frank Herbert" / "Dune"
+    _mp3(mp3)
+    epub_dir.mkdir(parents=True)
+    epub = epub_dir / "Dune.epub"
+    _epub(epub)
+    old_mp3, old_epub = ID3(mp3), zipfile.ZipFile(epub).read("OEBPS/content.opf")
+    folders = Folders(audio_sorted=tmp_path / "out", books_sorted=tmp_path / "books", review=tmp_path / "rev",
+                      state=tmp_path / "state", done=tmp_path / "done", protected=[], fix_xhe_aac=False)
+    for b, typ in ((mp3, BookType.AUDIO), (epub, BookType.EBOOK)):
+        book = Book(typ, [b], b.parent.parent.parent, folder=b.parent)
+        book.meta = Metadata(title="Dune", authors=["Frank Herbert"], series="Dune Chronicles", series_index=1,
+                             narrators=["Scott Brick"])
+        book.status = Status.READY
+        result = Executor(folders, mode="move").run(Planner(folders).plan([book]), [book])
+        assert result.count("done") == 1, result.results[0].detail
+        undo(next(r for r in list_runs(folders.state / "history") if r.run_id == result.run_id))
+    assert b.exists() and mp3.exists()
+    back = ID3(mp3)
+    assert sorted(back.keys()) == sorted(old_mp3.keys()) and str(back["TALB"]) == "old album"
+    assert zipfile.ZipFile(epub).read("OEBPS/content.opf") == old_epub
+
+
+def test_undo_of_an_edit_puts_real_m4b_tags_back(tmp_path):
+    import subprocess
+
+    import pytest
+    from mutagen.mp4 import MP4
+
+    from app.core import m4b
+    from app.core.library import edit_sorted_book
+    if not m4b.ffmpeg():
+        pytest.skip("no ffmpeg")
+    f = Folders(audio_sorted=tmp_path / "audio", state=tmp_path / "state", protected=[])
+    old = f.audio_sorted / "Audiobooks/Brittany Pressley/Perfect Blue/1 - Complete Metamorphosis"
+    old.mkdir(parents=True)
+    book = old / "Perfect Blue, Vol. 01.m4b"
+    subprocess.run([m4b.ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "sine=duration=2", "-c:a", "aac",
+                    "-metadata", "title=Perfect Blue, Vol. 01", "-metadata", "artist=Brittany Pressley",
+                    "-metadata", "album=Perfect Blue", "-metadata", "comment=keep me", str(book)], check=True)
+    before = dict(MP4(book).tags)
+    run_id, new = edit_sorted_book(f, old, {"authors": ["Yoshikazu Takeuchi"], "narrators": ["Brittany Pressley"]})
+    moved = new / book.name
+    assert MP4(moved).tags["\xa9ART"] == ["Yoshikazu Takeuchi"]          # re-tagged
+    undo(next(r for r in list_runs(f.state / "history") if r.run_id == run_id and not r.undone))
+    assert book.exists() and dict(MP4(book).tags) == before              # exactly the old tags again

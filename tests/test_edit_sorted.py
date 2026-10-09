@@ -104,3 +104,19 @@ def test_case_only_rename_of_a_sorted_light_novel_and_undo(tmp_path):
         "Light Novels/Doufu Mayoi/Black Summoner/1 - Black Summoner, Vol. 1 (Light Novel)/metadata.opf"]
     undo(next(r for r in list_runs(f.state / "history") if r.run_id == run_id))
     assert _files(tmp_path / "books") == before
+
+
+def test_edit_moves_an_ebook_to_light_novels_and_back(tmp_path):
+    f = Folders(books_sorted=tmp_path / "books", state=tmp_path / "state", protected=[])
+    old = f.books_sorted / "EBooks/Yoshikazu Takeuchi/Perfect Blue/1 - Complete Metamorphosis"
+    old.mkdir(parents=True)
+    (old / "Complete Metamorphosis.epub").write_bytes(b"not a real epub")
+    (old / "metadata.opf").write_text(OPF.replace("Earthsea Cycle Book 5", "Complete Metamorphosis")
+                                      .replace("Earthsea Cycle", "Perfect Blue").replace("Ursula K. Le Guin", "Yoshikazu Takeuchi")
+                                      .replace('content="5"', 'content="1"'), encoding="utf-8")
+    run_id, new = edit_sorted_book(f, old, {"light_novel": True})
+    assert new == f.books_sorted / "Light Novels/Yoshikazu Takeuchi/Perfect Blue/1 - Complete Metamorphosis"
+    assert (new / "Complete Metamorphosis.epub").exists()
+    assert not any(p.is_file() for p in (f.books_sorted / "EBooks").rglob("*"))  # the kind folder may stay
+    undo(next(r for r in list_runs(f.state / "history") if r.run_id == run_id))
+    assert (old / "Complete Metamorphosis.epub").exists()

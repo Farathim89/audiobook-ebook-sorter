@@ -72,6 +72,13 @@ def parse_name(text: str, book_type: BookType) -> Metadata:
         meta.year = int(m.group(1))
         s = s[:m.start()] + s[m.end():]
     s = clean_title(s) or ""
+    bare = re.sub(r"\s*\[[^\]]*\]", "", s).strip()  # release tags: '[J-Novel Club][Premium]'
+    if m := _SERIES_DASH_VOLUME_RE.match(words_to_numbers(bare)):
+        # '<Series> - Volume 12': the part before the dash is the series, not an author
+        meta.series = clean_title(m.group("series"))
+        meta.series_index = parse_index(m.group("idx"))
+        meta.title = clean_title(m.group("title")) or f"{meta.series}, Vol. {m.group('idx').lstrip('0') or '0'}"
+        return meta
 
     for pattern in _BOOK_PATTERNS:
         if m := pattern.match(s):
@@ -85,6 +92,11 @@ def parse_name(text: str, book_type: BookType) -> Metadata:
     return meta
 
 
+_SERIES_DASH_VOLUME_RE = re.compile(
+    r"(?i)^(?P<series>.+?)\s+[-–—]\s+(?:vol(?:ume)?\.?|book|tome)\s*(?P<idx>\d+(?:\.\d+)?)"
+    r"(?:\s+[-–—]\s+(?P<title>.+))?$")
+
+
 def strip_release(text: str) -> str:
     """'Made in Abyss v01 (2018) (Digital) (LuCaZ) [f]' -> 'Made in Abyss v01'."""
     s = re.sub(r"\[[^\]]*\]|\{[^}]*\}", "", text.replace("_", " "))
@@ -93,7 +105,25 @@ def strip_release(text: str) -> str:
     return s.strip(" -_.")
 
 
+_NUMBER_WORDS = {w: i for i, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
+    "seventeen eighteen nineteen twenty".split())}
+_WORD_VOLUME_RE = re.compile(r"(?i)\b(vol(?:ume)?\.?|book|part|tome)\s+(" + "|".join(_NUMBER_WORDS) + r")\b")
+
+
+def single_name(name: str) -> str:
+    """'Twoony Twoony' -> 'Twoony' (a shop puts a one-word pen name in both name fields)."""
+    m = re.fullmatch(r"\s*(\S+)\s+(\S+)\s*", name or "")
+    return m.group(1) if m and m.group(1).casefold() == m.group(2).casefold() else name
+
+
+def words_to_numbers(title: str) -> str:
+    """'Constellations Volume One' -> 'Constellations Volume 1'."""
+    return _WORD_VOLUME_RE.sub(lambda m: f"{m.group(1)} {_NUMBER_WORDS[m.group(2).lower()]}", title)
+
+
 def parse_volume(title: str, trailing_number: bool = False) -> tuple[str, float] | None:
+    title = words_to_numbers(title)
     patterns = _VOLUME_PATTERNS + ([_TRAILING_NUMBER_RE] if trailing_number else [])
     for pattern in patterns:
         if m := pattern.match(title):
@@ -105,10 +135,17 @@ def parse_volume(title: str, trailing_number: bool = False) -> tuple[str, float]
 
 def split_series_from_title(title: str) -> tuple[str, str, float] | None:
     """('The Way of Kings', 'The Stormlight Archive', 1.0) or None."""
+    title = words_to_numbers(title)
     for pattern in _TITLE_SERIES_RES:
         if m := pattern.match(title):
+            if _PART_OF_NAME_RE.match(m.group("series").strip()):
+                return None  # 'Classroom of the Elite: Year 2 Vol. 6': 'Year 2' belongs to the series name
             return m.group("title").strip(), m.group("series").strip(), float(m.group("idx"))
     return None
+
+
+# 'Year 2', 'Part 3', 'Season 1': a part of a series' name, not a series of its own
+_PART_OF_NAME_RE = re.compile(r"(?i)^(?:year|part|season|arc|phase|stage|act|chapter|cour)\s*\d+$")
 
 
 def _parse_comic(text: str) -> Metadata:

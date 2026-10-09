@@ -18,7 +18,7 @@ from typing import Callable
 
 from ..config import Folders
 from . import m4b
-from .history import Journal, rename_in_two_steps, same_place
+from .history import Journal, keep_old_tags, rename_in_two_steps, same_place
 from .leftovers import done_dir, drop_empty_parents, leftovers, old_done_days, to_recycle_bin
 from .models import Book
 from .text import fold
@@ -57,6 +57,10 @@ class LibraryEditor:
         size = src.stat().st_size
         shutil.move(str(src), str(dst))  # a rename on the same drive
         self.journal.write(op="move", src=str(src), dst=str(dst), size=size)
+
+    def keep_tags(self, path: Path) -> None:
+        """Before the first change to a file's tags in this run: save them, so undo puts them back."""
+        keep_old_tags(self.journal, self.parked, path)
 
     def rename(self, src: Path, dst: Path) -> None:
         """Rename a file or folder in place - also when only the case changes ('light' -> 'Light'),
@@ -108,6 +112,10 @@ class LibraryEditor:
             raise PermissionError(f"protected Audiobookshelf folder, not touched: {folder}")
         out, source = m4b.make_m4b(book, folder, http, on_progress=on_progress)
         self.journal.write(op="create", dst=str(out), size=out.stat().st_size)
+        expected = sum(m4b.duration(f) for f in book.files)
+        if problem := self.play_test(out, expected):
+            out.unlink()  # never trade the old files for a broken one
+            raise OSError(f"the new m4b failed the play test ({problem}) - removed it, the old files stay")
         for f in book.files:
             self.park(f, folder)
         self.park_abs_metadata(folder)
@@ -115,12 +123,40 @@ class LibraryEditor:
         return out
 
 
+    def play_test(self, path: Path, expected: float | None = None) -> str:
+        """The Settings > Play test (full / quick); '' when it plays or testing is off."""
+        if self.folders.play_test == "off":
+            return ""
+        return m4b.play_test(path, expected or None, full=self.folders.play_test == "full")
+
     def fix_xhe_aac(self, path: Path, cancelled: Callable[[], bool] = lambda: False) -> None:
         """Replace an xHE-AAC file (ABS can't read it) by a plain-AAC one; the original is parked."""
         if self.folders.is_protected(path):
             raise PermissionError(f"protected Audiobookshelf folder, not touched: {path}")
         new = path.with_name(path.stem + ".aac-lc" + path.suffix)
         m4b.reencode_aac(path, new, cancelled)
+        if problem := self.play_test(new, m4b.duration(path)):
+            new.unlink()
+            raise OSError(f"the AAC copy failed the play test ({problem}) - removed it, the original stays")
+        self.park(path, path.parent)
+        new.rename(path)
+        self.journal.write(op="create", dst=str(path), size=path.stat().st_size)
+        self.park_abs_metadata(path.parent)
+
+
+    def repair_audio(self, path: Path, cancelled: Callable[[], bool] = lambda: False) -> None:
+        """A file with damaged audio packets (a bad download) re-encoded to clean AAC: players don't
+        stumble over the broken bits any more (the few missing milliseconds stay missing). The original
+        is parked - undo puts it back."""
+        if self.folders.is_protected(path):
+            raise PermissionError(f"protected Audiobookshelf folder, not touched: {path}")
+        new = path.with_name(path.stem + ".repaired" + path.suffix)
+        m4b.reencode_aac(path, new, cancelled)
+        problem = self.play_test(new, m4b.duration(path)) or (
+            "still damaged" if m4b.damaged_packets(new, cancelled) else "")
+        if problem:
+            new.unlink()
+            raise OSError(f"the repaired copy failed the play test ({problem}) - removed it, the original stays")
         self.park(path, path.parent)
         new.rename(path)
         self.journal.write(op="create", dst=str(path), size=path.stat().st_size)
@@ -626,6 +662,17 @@ def edit_sorted_book(folders: Folders, folder: Path, values: dict) -> tuple[str,
     if book is None:
         raise ValueError(f"no book found in {folder}")
     old_title = book.meta.title
+    from .infolog import InfoLog, what_was_decided, what_was_read  # noqa: PLC0415
+    read, before, asked = what_was_read(book), what_was_decided(book), dict(values)
+    values = dict(values)
+    light_novel = values.pop("light_novel", None)  # audiobooks: move to Light Novels / Audiobooks
+    import copy  # noqa: PLC0415
+    from .rules import Rules, book_kind  # noqa: PLC0415
+    old_meta, old_kind = copy.deepcopy(book.meta), book_kind(book)
+    author_dir = folder.parent.parent if book.meta.series else folder.parent
+    if old_meta.authors and fold(author_dir.name) != fold(clean_name(old_meta.authors[0])):
+        # the tags already say 'Shoji Goji', the folder still 'Goji Shoji': the folder's name is what you fixed
+        old_meta.authors = [author_dir.name, *old_meta.authors[1:]]
     edit_book(book, **values)
     m = book.meta
     root = _library_root(folders, folder)
@@ -633,6 +680,14 @@ def edit_sorted_book(folders: Folders, folder: Path, values: dict) -> tuple[str,
     planner = Planner(folders)
     # keep the kind folder the book already lives in (Audiobooks, Light Novels, Manga...)
     kind_parts = rel.parts[: max(0, len(rel.parts) - (2 + (1 if _had_series(rel, folders) else 0)))]
+    if light_novel is not None and book.type is BookType.AUDIO and folders.split_audio \
+            and root == folders.audio_sorted:
+        kind_parts = (folders.audio_ln_dir if light_novel else folders.audio_dir,)
+    elif light_novel is not None and book.type is BookType.EBOOK and folders.split_books \
+            and root == folders.books_sorted:
+        kind_parts = (folders.light_novel_dir if light_novel else folders.ebook_dir,)
+    if light_novel is not None:
+        book.light_novel = bool(light_novel)
     new_dir = root.joinpath(*kind_parts) / clean_name(book.author or "Unknown Author")
     if m.series:
         new_dir /= planner.series_folder(book)
@@ -640,6 +695,8 @@ def edit_sorted_book(folders: Folders, folder: Path, values: dict) -> tuple[str,
     if folders.is_protected(new_dir):
         raise PermissionError(f"protected folder: {new_dir}")
     with LibraryEditor(folders, "edit") as ed:
+        InfoLog(folders.state, ed.run_id).write(edit=str(folder), asked=asked, read=read, before=before,
+                                                after=what_was_decided(book, new_dir))
         if str(new_dir) != str(folder) and same_place(new_dir, folder):
             ed.rename(folder, new_dir)  # only the case changed ('(light Novel)' -> '(Light Novel)')
         elif new_dir != folder:
@@ -661,6 +718,7 @@ def edit_sorted_book(folders: Folders, folder: Path, values: dict) -> tuple[str,
                         ed.move_file(f, new_file)
                     files[i] = new_file
         for f in files:
+            ed.keep_tags(f)  # the sorted book's own files: undo puts the old tags back
             if write_tags(f, book, whole_book=len(files) == 1):
                 ed.updated(f)
         if book.type is BookType.AUDIO:
@@ -684,6 +742,10 @@ def edit_sorted_book(folders: Folders, folder: Path, values: dict) -> tuple[str,
             opf.write_bytes(data)
             ed.journal.write(op="create", dst=str(opf), size=len(data))
         ed.park_abs_metadata(new_dir)
+        try:  # the next sort does the same by itself (undo of this edit removes the rule)
+            Rules.load(folders.state).learn(old_meta, old_kind, book, run_id=ed.run_id)
+        except (OSError, ValueError):
+            pass
         return ed.run_id, new_dir
 
 
@@ -804,3 +866,51 @@ def apply_cover_upgrades(folders: Folders, upgrades: list[CoverUpgrade]) -> tupl
                     ed.updated(f)
             ed.park_abs_metadata(up.folder)
         return ed.run_id, len(upgrades)
+
+
+def replace_damaged_copies(folders: Folders, plan, books: list, cancelled: Callable[[], bool] = lambda: False,
+                           on_step: Callable[[str, str], None] | None = None) -> list:
+    """New downloads of books the library already has: when the sorted copy is damaged (it fails the
+    full play test - '56 damaged audio packets') and the new one plays clean, the old book folder goes
+    to Done/Replaced (damaged)/... (undoable) so the new copy can take its place. Returns those books."""
+    from . import m4b  # noqa: PLC0415
+    from .models import AUDIO_EXTS, BookType  # noqa: PLC0415
+    if not m4b.ffmpeg():
+        return []
+    replaced = []
+    for book in books:
+        target = plan.targets.get(book)
+        if cancelled() or book.type is not BookType.AUDIO or target is None or not target.is_dir() \
+                or folders.is_protected(target):
+            continue
+        old = sorted(p for p in target.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTS)
+        if not old:
+            continue
+        title = book.meta.title or book.main_file.stem
+        if on_step:
+            on_step(title, "play-testing the sorted copy (is it damaged?)")
+        if not any(m4b.play_test(f, full=True, cancelled=cancelled) for f in old):
+            continue  # the library's copy is fine: the new one is just another copy
+        if on_step:
+            on_step(title, "the sorted copy is damaged - play-testing the new copy")
+        problems = [m4b.play_test(f, full=True, cancelled=cancelled) for f in book.files]
+        if cancelled():
+            continue
+        if any(problems):
+            # damaged too: only a copy with at most half the damaged packets (and nothing else wrong) wins
+            if not all(not p or "damaged audio packets" in p for p in problems):
+                continue
+            if on_step:
+                on_step(title, "both copies are damaged - counting the damaged packets")
+            before = sum(m4b.damaged_packets(f, cancelled) for f in old)
+            after = sum(m4b.damaged_packets(f, cancelled) for f in book.files)
+            if not before or after * 2 > before:
+                continue
+        try:
+            rel = target.relative_to(folders.audio_sorted)
+        except ValueError:
+            rel = Path(target.name)
+        with LibraryEditor(folders, "replace-damaged") as ed:
+            ed.move_tree(target, folders.done / "Replaced (damaged)" / rel)
+        replaced.append(book)
+    return replaced

@@ -161,6 +161,7 @@ def chapters_are_good(existing: list[Chapter], audible: list[Chapter] | None = N
     return named >= 0.8 * len(existing)
 
 
+_PICTURE_DECODER_RE = re.compile(r"^\[(?:mjpeg|png|bmp|gif|webp|jpeg2000|tiff|jpegls)\s@")
 PLAY_SECONDS = 20  # quick play test: this much audio at the start, middle and end
 
 
@@ -191,25 +192,90 @@ def play_test(path: Path, expected: float | None = None, full: bool = False,
         return "the file has no length"
     if expected and abs(length - expected) > max(2.0, expected * 0.01):
         return f"it is {_hms(length)} long instead of {_hms(expected)}"
-    spots = [None] if full else sorted({0.0, max(0.0, length / 2 - PLAY_SECONDS / 2),
-                                        max(0.0, length - PLAY_SECONDS - 1)})
-    for start in spots:
+    if full:
+        # the whole file, in parts played at the same time (one CPU core each) - each must play to its end
+        parts = max(1, min(PLAY_PARTS, int(length // 300) or 1))
+        size = length / parts
+        spots = [(i * size, size if i < parts - 1 else None) for i in range(parts)]
+    else:
+        spots = [(s, PLAY_SECONDS) for s in sorted({0.0, max(0.0, length / 2 - PLAY_SECONDS / 2),
+                                                    max(0.0, length - PLAY_SECONDS - 1)})]
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+    with ThreadPoolExecutor(max_workers=len(spots)) as pool:
+        for problem in pool.map(lambda sp: _play_part(exe, path, length, *sp, cancelled), spots):
+            if problem:
+                return problem
+    return ""
+
+
+def damaged_packets(path: Path, cancelled: Callable[[], bool] = lambda: False) -> int:
+    """How many damaged audio packets the WHOLE file has (the play test stops at the first bad part)."""
+    exe, probe = ffmpeg(), find_tool("ffprobe")
+    if not exe or not probe:
+        return 0
+    out = subprocess.run([probe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
+    try:
+        length = float(out.stdout.strip() or 0)
+    except ValueError:
+        length = 0.0
+    parts =max(1, min(PLAY_PARTS, int(length // 300) or 1))
+    size = length / parts if length else 0.0
+
+    def count(i: int) -> int:
+        if cancelled():
+            return 0
+        cmd = [exe, "-hide_banner", "-nostdin", "-v", "error"]
+        cmd += ["-ss", f"{i * size:.2f}"] if i else []
+        cmd += ["-i", str(path)] + (["-t", f"{size:.2f}"] if i < parts - 1 and size else [])
+        cmd += ["-map", "0:a:0", "-f", "null", "-"]
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=_NO_WINDOW)
+        return sum("Error submitting packet" in ln for ln in r.stderr.splitlines())
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+    with ThreadPoolExecutor(max_workers=parts) as pool:
+        return sum(pool.map(count, range(parts)))
+
+
+PLAY_PARTS = 8  # a full play test plays this many parts of the file at the same time
+MAX_BAD_PACKETS = 5  # this many damaged packets in a file that plays to the end still pass ...
+BAD_PACKETS_PER_MINUTE = 1  # ... or this many per minute of audio (56 in 8 h: two or three short clicks)
+
+
+def _play_part(exe: str, path: Path, length: float, start: float, seconds: float | None,
+               cancelled: Callable[[], bool]) -> str:
+    """'' when this part of the file plays to its end, else what is wrong."""
+    for _ in (1,):
         if cancelled():
             return ""
+        whole = start == 0 and seconds is None
         cmd = [exe, "-hide_banner", "-nostdin", "-v", "error"]
-        cmd += [] if start is None else ["-ss", f"{start:.2f}"]
-        cmd += ["-i", str(path)] + ([] if start is None else ["-t", str(PLAY_SECONDS)])
+        cmd += [] if start == 0 else ["-ss", f"{start:.2f}"]
+        cmd += ["-i", str(path)] + ([] if seconds is None else ["-t", f"{seconds:.2f}"])
         cmd += ["-map", "0:a:0", "-f", "null", "-progress", "pipe:1", "-nostats", "-"]
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                            creationflags=_NO_WINDOW)
-        err = r.stderr.strip()
-        where = "" if start is None else f" at {_hms(start)}"
+        # only the AUDIO counts: a broken cover picture inside ('[mjpeg @ ...] dqt: invalid precision')
+        # is reported too, but plays fine in every player
+        # ... nor a chapter list pointing at a missing track ('Referenced QT chapter track not found')
+        err = "\n".join(ln for ln in r.stderr.splitlines()
+                        if ln.strip() and not _PICTURE_DECODER_RE.match(ln.strip())
+                        and "Referenced QT chapter track not found" not in ln).strip()
+        where = "" if whole else f" at {_hms(start)}"
+        # a few damaged packets in a long download ('invalid band type' twice in 5 h): a click, not a broken
+        # file - it still plays to the end (checked below), and every player skips them too
+        packets = sum("Error submitting packet" in ln for ln in err.splitlines())
+        minutes = ((length - start) if seconds is None else min(seconds, length - start)) / 60
+        if r.returncode == 0 and 0 < packets <= max(MAX_BAD_PACKETS, minutes * BAD_PACKETS_PER_MINUTE):
+            err = ""
+        elif r.returncode == 0 and packets:
+            return f"{packets} damaged audio packets{where} (a damaged download: clicks or skips - get it again)"
         if r.returncode != 0 or err:
             return f"decode error{where}: {err.splitlines()[0][:150] if err else 'ffmpeg failed'}"
         # a cut-off file decodes 'fine' - just nothing past its end: the audio itself must be there
         played = max((int(v) for k, v in (ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
                       if k == "out_time_us" and v.strip().lstrip("-").isdigit()), default=0) / 1e6
-        want = length if start is None else min(PLAY_SECONDS, length - start)
+        want = length - start if seconds is None else min(seconds, length - start)
         if played < want * 0.95 - 1:
             return f"audio stops early{where}: {_hms(played)} played of {_hms(want)}"
     return ""
@@ -313,7 +379,8 @@ def plan_chapters(book: Book, files: list[Path], http: Http | None,
 
 
 # -- ffmpeg ----------------------------------------------------------------
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# no console window, and below-normal priority: sorting uses the PC's spare power, the PC stays smooth
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 
 def _ffmeta_escape(s: str) -> str:
@@ -376,7 +443,8 @@ def _run_ffmpeg(files, out, chapters, title, total, encode, on_progress=None, ca
         meta.write_text(ffmetadata(chapters, title), encoding="utf-8")
         cmd = [exe, "-hide_banner", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
                "-i", str(meta), "-map", "0:a", "-map_metadata", "1", "-map_chapters", "1"]
-        cmd += ["-c:a", "aac", "-b:a", pick_bitrate(files)] if encode else ["-c", "copy"]
+        # AAC 'fast' coder: ~2.4x faster than the default, no audible difference for speech at these bitrates
+        cmd += ["-c:a", "aac", "-aac_coder", "fast", "-b:a", pick_bitrate(files)] if encode else ["-c", "copy"]
         cmd += ["-movflags", "+faststart", "-f", "mp4", "-progress", "pipe:1", "-loglevel", "error", str(tmp_out)]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                 encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
@@ -526,7 +594,7 @@ def reencode_aac(src: Path, out: Path, cancelled: Callable[[], bool] = lambda: F
                "-movflags", "+faststart", "-f", "mp4", str(tmp)]
     else:
         cmd = [exe, "-hide_banner", "-nostdin", "-y", "-v", "error", "-i", str(src), "-map", "0:a:0",
-               "-map_metadata", "0", "-map_chapters", "0", "-c:a", "aac", "-b:a", f"{kbps}k",
+               "-map_metadata", "0", "-map_chapters", "0", "-c:a", "aac", "-aac_coder", "fast", "-b:a", f"{kbps}k",
                "-movflags", "+faststart", "-f", "mp4", str(tmp)]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)

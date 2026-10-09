@@ -21,16 +21,20 @@ class Journal:
         self.run_id = time.strftime("%Y%m%d-%H%M%S")
         self.path = history_dir / f"{self.run_id}.jsonl"
         n = 1
-        while self.path.exists():
+        # an undone run is renamed '<id>.undone.jsonl': its id stays taken (info log, saved tags)
+        while self.path.exists() or self.path.with_name(f"{self.path.stem}.undone.jsonl").exists():
             n += 1
             self.path = history_dir / f"{self.run_id}-{n}.jsonl"
         self.run_id = self.path.stem
         self._fh = open(self.path, "a", encoding="utf-8")
+        import threading  # noqa: PLC0415
+        self._lock = threading.Lock()  # several books are sorted at once
         self.write(op="run", mode=mode, time=time.strftime("%Y-%m-%d %H:%M:%S"))
 
     def write(self, **entry) -> None:
-        self._fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        self._fh.flush()
+        with self._lock:
+            self._fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            self._fh.flush()
 
     def close(self) -> None:
         self._fh.close()
@@ -79,6 +83,16 @@ def undo(run: RunInfo, processed: Processed | None = None) -> UndoResult:
         op = e.get("op")
         dst = Path(e["dst"]) if "dst" in e else None
         try:
+            if op == "tags":
+                # the app re-tagged this file (an original - Move mode or Edit): put the old tags back
+                # before it moves back
+                from .tagger import restore_tags  # noqa: PLC0415
+                saved = Path(e["saved"])
+                if dst is None or not dst.exists() or not saved.exists():
+                    result.skipped.append(f"old tags not put back (file or saved tags gone): {dst}")
+                    continue
+                restore_tags(dst, saved.read_bytes())
+                continue
             if op == "delete":
                 where = "in the Recycle Bin" if e.get("how") == "recycle bin" else "deleted for good"
                 result.skipped.append(f"{where}, can't bring back: {e.get('src')}")
@@ -121,6 +135,11 @@ def undo(run: RunInfo, processed: Processed | None = None) -> UndoResult:
     run.path.rename(run.path.with_name(f"{run.path.stem}.undone.jsonl"))
     if processed is not None:
         processed.save()
+    try:  # an undone Edit: the rule it taught goes too (history\<run>.jsonl -> state\rules.json)
+        from .rules import Rules  # noqa: PLC0415
+        Rules.load(run.path.parent.parent).forget_run(run.run_id)
+    except (OSError, ValueError):
+        pass
     return result
 
 
@@ -192,3 +211,22 @@ class Processed:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text("".join(f"{k}\n" for k in sorted(self.keys)), encoding="utf-8")
+
+
+def keep_old_tags(journal: Journal, parked: Path, path: Path, kept: set | None = None) -> None:
+    """Save a file's tags before the app changes them (once per run and file) and journal it, so
+    undo can write them back. parked = <state>\\replaced\\<run id>."""
+    from .tagger import tag_snapshot  # noqa: PLC0415
+    key = os.path.normcase(str(path))
+    if kept is not None:
+        if key in kept:
+            return
+        kept.add(key)
+    snapshot = tag_snapshot(path)
+    if snapshot is None:
+        return
+    folder = parked / "tags"
+    folder.mkdir(parents=True, exist_ok=True)
+    saved = folder / f"{len(list(folder.iterdir())) + 1:05d}.tags"
+    saved.write_bytes(snapshot)
+    journal.write(op="tags", dst=str(path), saved=str(saved))

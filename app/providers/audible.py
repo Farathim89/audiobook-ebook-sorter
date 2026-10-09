@@ -53,8 +53,10 @@ class Audible:
         images = p.get("product_images") or {}
         meta = Metadata(
             title=clean_title(p.get("title")),
+            subtitle=(p.get("subtitle") or "").strip() or None,
             authors=[_name(a["name"]) for a in p.get("authors") or [] if a.get("name") and not _ROLE_RE.search(a["name"])],
-            narrators=[_name(n["name"]) for n in p.get("narrators") or [] if n.get("name")],
+            narrators=[_name(n["name"]) for n in p.get("narrators") or [] if n.get("name")
+                       and not _ROLE_RE.search(n["name"])],
             series=series.get("title") or None,
             series_index=parse_index(series.get("sequence")),
             year=parse_year(p.get("release_date") or p.get("issue_date")),
@@ -67,7 +69,7 @@ class Audible:
         if not meta.series:
             meta.series_index = None
         url = f"https://www.audible.{TLDS.get(self.region, 'com')}/pd/{p.get('asin')}"
-        return Candidate(meta, self.name, url)
+        return Candidate(meta, self.name, url, length=float(p.get("runtime_length_min") or 0) * 60)
 
 
 def _strip_html(text: str | None) -> str | None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +19,8 @@ from ..config import Folders
 from ..providers.http import Cache, Http
 from . import m4b
 from .covers import extract_cover
-from .history import Journal, Processed
+from .history import Journal, Processed, keep_old_tags
+from .infolog import InfoLog, what_was_read
 from .leftovers import done_dir, drop_empty_parents, leftovers, recycle_bin_on, to_recycle_bin
 from .library import remove_empty_dirs
 from .models import Book, BookType, Status
@@ -40,6 +42,7 @@ class BookResult:
 class RunResult:
     run_id: str
     results: list[BookResult] = field(default_factory=list)
+    duplicates: tuple[str, int] | None = None  # (run id, books) moved out of Incoming after the sort
 
     def count(self, status: str) -> int:
         return sum(r.status == status for r in self.results)
@@ -48,7 +51,7 @@ class RunResult:
 class Executor:
     def __init__(self, folders: Folders, mode: str = "copy", processed: Processed | None = None,
                  to_m4b: bool = False, on_detail: Callable[[str], None] | None = None,
-                 redo_m4b: bool | None = None):
+                 redo_m4b: bool | None = None, on_step: Callable[[str, str], None] | None = None):
         """to_m4b: multi-file audiobooks become one chaptered .m4b. redo_m4b (default: the setting):
         books that already are one .m4b get Audible's chapter names, and with m4b_codec "aac" are
         re-encoded too. In Move mode the originals of a new file go to the Done folder."""
@@ -56,8 +59,11 @@ class Executor:
             raise ValueError(mode)
         self.folders, self.mode, self.to_m4b = folders, mode, to_m4b
         self.redo_m4b = folders.redo_m4b if redo_m4b is None else redo_m4b
+        self._tls = threading.local()  # the book each worker thread is busy with
+        self.workers = folders.workers or auto_workers()
         self.processed = processed or Processed(folders.state / "processed.txt")
         self.on_detail = on_detail or (lambda s: None)
+        self.on_step = on_step  # (book title, what is happening) - the window shows them apart
         self._cancelled: Callable[[], bool] = lambda: False
         self._http: Http | None = None
 
@@ -67,27 +73,74 @@ class Executor:
         books = list(plan.targets) if books is None else books
         self._cancelled = cancelled
         self._title = ""
+        self._kept_tags: set[str] = set()  # files whose old tags are saved in this run
         moves: dict[Book, list[Move]] = {}
         for mv in plan.moves:
             moves.setdefault(mv.book, []).append(mv)
 
+        # the full play test plays parts at the same time: share the cores between the books running at once
+        m4b.PLAY_PARTS = max(2, min(8, ((os.cpu_count() or 4) // 2) // max(1, self.workers)))
+        self._owned: dict[str, Book] = {}  # source file -> the book of this run that moves it
+        for b in books:
+            for f in [*b.files, *b.extras, *(mv.src for mv in moves.get(b, []))]:
+                self._owned.setdefault(os.path.normcase(str(f)), b)
         journal = Journal(self.folders.state / "history", self.mode)
         result = RunResult(journal.run_id)
+        info = InfoLog(self.folders.state, journal.run_id)  # what each book's files said + what was decided
+        def one(book: Book) -> BookResult | None:
+            if cancelled():
+                return None
+            read = what_was_read(book)  # before anything moves
+            r = self._book(book, plan, moves.get(book, []), journal)
+            info.book(book, plan.targets.get(book), read, r.status, r.detail)
+            return r
+
         try:
-            for i, book in enumerate(books, 1):
-                if cancelled():
-                    break
-                result.results.append(self._book(book, plan, moves.get(book, []), journal))
-                if on_progress:
-                    on_progress(i, len(books), book)
+            if self.workers <= 1 or len(books) <= 1:
+                for i, book in enumerate(books, 1):
+                    if (r := one(book)) is None:
+                        break
+                    result.results.append(r)
+                    if on_progress:
+                        on_progress(i, len(books), book)
+            else:
+                # several books at once: encoding and play tests use one CPU core each
+                from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
+                done: dict[Book, BookResult] = {}
+                # books in the same folder (an audiobook and its ebook side by side) one after another,
+                # never at the same time - they share cover.jpg, metadata.json...
+                groups: dict[str, list[Book]] = {}
+                for b in books:
+                    groups.setdefault(os.path.normcase(str(b.folder or b.main_file.parent)), []).append(b)
+
+                def group(bs: list[Book]) -> list[tuple[Book, BookResult | None]]:
+                    return [(b, one(b)) for b in bs]
+
+                count = 0
+                with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                    for fut in as_completed([pool.submit(group, g) for g in groups.values()]):
+                        for b, r in fut.result():
+                            count += 1
+                            if r is not None:
+                                done[b] = r
+                            if on_progress:
+                                on_progress(count, len(books), b)
+                result.results = [done[b] for b in books if b in done]  # in the order they were given
         finally:
             journal.close()
             self.processed.save()
         return result
 
+    # per book - and several books run at once, so per thread
+    _title = property(lambda s: getattr(s._tls, "title", ""), lambda s, v: setattr(s._tls, "title", v))
+    _notes = property(lambda s: getattr(s._tls, "notes", []), lambda s, v: setattr(s._tls, "notes", v))
+    _full_ok = property(lambda s: getattr(s._tls, "full_ok", None), lambda s, v: setattr(s._tls, "full_ok", v))
+
     def _step(self, text: str) -> None:
         """Tell the window what is happening right now: '<title> - adding Audible chapters'."""
         self.on_detail(f"{self._title} - {text}" if self._title else text)
+        if self.on_step:
+            self.on_step(self._title, text)
 
     def _book(self, book: Book, plan: Plan, moves: list[Move], journal: Journal) -> BookResult:
         self._title = book.meta.title or book.main_file.stem
@@ -149,6 +202,8 @@ class Executor:
                 if self.folders.write_tags:
                     self._step("writing tags")
                     for mv in moves:
+                        if not mv.in_place and self.mode == "move":
+                            self._keep_tags(mv.dst, journal)  # your original: undo puts its tags back
                         if not mv.in_place and write_tags(mv.dst, book):
                             journal.write(op="update", dst=str(mv.dst), size=mv.dst.stat().st_size)
                     if m4b_file and write_tags(m4b_file, book, whole_book=True):
@@ -165,6 +220,10 @@ class Executor:
                     self._create(path, content, journal)
                     if path.stem == "cover" and book.type is BookType.AUDIO:
                         self._step("putting the cover inside the audio file")
+                        if self.mode == "move" and not m4b_file:
+                            for mv in moves:
+                                if not mv.in_place:
+                                    self._keep_tags(mv.dst, journal)
                         self._embed_cover(book, moves, m4b_file, content, journal)
                 edited = [m4b_file] if m4b_file else [mv.dst for mv in moves if not mv.in_place]
                 edited = [f for f in edited if f and f.suffix.lower() in (".m4b", ".m4a", ".mp3", ".flac", ".ogg")]
@@ -250,6 +309,9 @@ class Executor:
             return None, "", set()
         return out, source, set(files)
 
+    def _keep_tags(self, path: Path, journal: Journal) -> None:
+        keep_old_tags(journal, self.folders.state / "replaced" / journal.run_id, path, self._kept_tags)
+
     def _play_test(self, path: Path, expected: float | None = None) -> str:
         """'' when the file plays (or testing is off), else what is wrong with it."""
         how = self.folders.play_test
@@ -316,7 +378,11 @@ class Executor:
             if f.is_file():
                 rel = f.relative_to(book.source_root) if book.source_root in f.parents else Path(f.name)
                 self._to_done(f, dest / rel, journal, may_remove)
-        for f in leftovers(folder, book.source_root):
+        rest = leftovers(folder, book.source_root)
+        owned = getattr(self, "_owned", {})
+        if any(owned.get(os.path.normcase(str(f)), book) is not book for f in rest):
+            return  # another book of this run still lives here (its cover.jpg, book info.txt...): not ours
+        for f in rest:
             self._to_done(f, dest / f.relative_to(book.source_root), journal)
         if folder != book.source_root and folder.is_dir():
             remove_empty_dirs(folder)
@@ -352,8 +418,17 @@ class Executor:
             missing.append(d)
             d = d.parent
         for p in reversed(missing):
-            p.mkdir()
+            try:
+                p.mkdir()
+            except FileExistsError:
+                continue  # another book (sorted at the same time) made it a moment ago
             journal.write(op="mkdir", path=str(p))
+
+
+def auto_workers() -> int:
+    """Books sorted at once: 3 at most (encoding and play tests use a core each, and they share one
+    disk - more makes the PC sluggish), fewer on a small PC."""
+    return max(1, min(3, (os.cpu_count() or 4) // 4))
 
 
 def _size(path: Path) -> str:

@@ -18,6 +18,12 @@ EXISTING_WEIGHT = 1000
 _SERIES_NOISE_RE = re.compile(r"(?i)^(?:the|an?)\s+|\s+series$|\s*\((?:light novel|manga|comic)\)$|\s+light novel$")
 
 
+
+def clean_name(name: str) -> str:
+    from .planner import clean_name as _clean  # noqa: PLC0415 - avoid an import cycle
+    return _clean(name).casefold()
+
+
 def series_key(name: str) -> str:
     prev = None
     while prev != name:
@@ -48,13 +54,19 @@ def unify_names(books: list[Book], library_roots: list[Path]) -> None:
             series_votes[(fold(b.author), series_key(b.meta.series))][b.meta.series] += 1
     for b in books:
         if b.meta.series and b.author:
-            b.meta.series = _pick(series_votes[(fold(b.author), series_key(b.meta.series))])
+            best = _pick(series_votes[(fold(b.author), series_key(b.meta.series))])
+            # 'Disciple of the Lich: Or How...' and the folder 'Disciple of the Lich - Or How...' (no ':'
+            # in folder names) are the same folder: keep the real name with its colon
+            if clean_name(best) != clean_name(b.meta.series):
+                b.meta.series = best
 
 
 def _pick(votes: Counter) -> str:
     """The most used spelling; on a tie the one with its article ('A Cave King's...' over 'Cave King's...').
     A folder already in the library weighs most, so a sorted series never splits in two."""
-    return max(votes.items(), key=lambda kv: (kv[1], bool(re.match(r"(?i)(?:the|an?)\s", kv[0]))))[0]
+    # ... and never the all-lowercase one ('your name.' from a stylised cover) when a capitalised one is there
+    return max(votes.items(), key=lambda kv: (kv[0] != kv[0].lower(), kv[1],
+                                              bool(re.match(r"(?i)(?:the|an?)\s", kv[0]))))[0]
 
 
 def _one_author_per_series(books: list[Book]) -> None:
@@ -79,7 +91,13 @@ def _one_author_per_series(books: list[Book]) -> None:
             lead = vols[0].author
         else:
             continue
+        credited = Counter(fold(a) for b in vols for a in b.meta.authors)
         for b in vols:
+            if not common and len(b.meta.authors) == 1 and credited[fold(b.author)] == 1 \
+                    and b.sources.get("authors") in ("anilist", "filename", "folder"):
+                # AniList spells him 'Dozeumaru', every other volume 'Dojyomaru': a spelling, no co-author
+                b.meta.authors = [lead]
+                continue
             b.meta.authors = [lead] + [a for a in b.meta.authors if fold(a) != fold(lead)]
 
 

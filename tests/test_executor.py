@@ -287,3 +287,91 @@ def test_old_copy_is_only_removed_after_a_full_play_test(tmp_path, monkeypatch):
     assert removed == []                                                     # quick only: not trusted enough
     assert next((tmp_path / "done").rglob("Some Book.m4b")).read_bytes() == b"original"
     assert "old copy kept in Done" in result.results[0].detail
+
+
+def test_info_log_says_what_was_read_and_decided(tmp_path):
+    import json
+    from app.core.infolog import read_info
+    src_dir = tmp_path / "in" / "Some Author" / "Some Book"
+    src_dir.mkdir(parents=True)
+    (src_dir / "Some Book.m4b").write_bytes(b"audio")
+    (src_dir / "metadata.json").write_text(json.dumps({"title": "Some Book", "authors": ["Some Author"]}),
+                                           encoding="utf-8")
+    (src_dir / "book info.txt").write_text("By: Some Author\nNarrated by: A Reader\n", encoding="utf-8")
+    folders = Folders(audio_sorted=tmp_path / "out", review=tmp_path / "rev", state=tmp_path / "state",
+                      done=tmp_path / "done", protected=[], fix_xhe_aac=False, write_tags=False)
+    books = load_books([tmp_path / "in"])
+    result = Executor(folders, mode="move").run(Planner(folders).plan(books))
+    (entry,) = read_info(folders.state, result.run_id)
+    assert entry["read"]["metadata files"]["authors"] == ["Some Author"]
+    assert entry["read"]["book info.txt"]["narrators"] == ["A Reader"]
+    assert entry["decided"]["values"]["title"] == "Some Book" and entry["decided"]["from"]["title"] == "sidecar"
+    assert Path(entry["decided"]["target"]).parts[-2:] == ("Some Author", "Some Book") and entry["result"] == "done"
+
+
+def test_play_test_ignores_a_broken_cover_picture(monkeypatch):
+    import subprocess
+    from app.core import m4b
+    monkeypatch.setattr(m4b, "ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(m4b, "find_tool", lambda name: name)
+
+    def run(cmd, **kw):
+        if "ffprobe" in cmd[0]:
+            return subprocess.CompletedProcess(cmd, 0, '{"streams": [{"codec_name": "aac"}], "format": {"duration": "100"}}', "")
+        return subprocess.CompletedProcess(cmd, 0, "out_time_us=20000000\n",
+                                           "[mjpeg @ 0000019e] dqt: invalid precision\n[mjpeg @ 0000019e] bits 198 is invalid\n")
+    monkeypatch.setattr(m4b.subprocess, "run", run)
+    assert m4b.play_test(Path("x.m4b"), 100) == ""
+
+
+test_play_test_ignores_a_broken_cover_picture = __import__("pytest").mark.real_play_test(
+    test_play_test_ignores_a_broken_cover_picture)
+
+
+def test_several_books_at_once_keep_order_history_and_undo(tmp_path):
+    from app.core.history import list_runs, undo
+    from app.core.models import Status
+    src = tmp_path / "in"
+    for n in range(1, 13):
+        d = src / "Some Author" / "Long Series" / f"Long Series, Vol. {n:02d}"
+        d.mkdir(parents=True)
+        (d / f"Long Series, Vol. {n:02d}.m4b").write_bytes(b"audio" * n)
+        (d / "cover.jpg").write_bytes(b"img")
+    folders = Folders(audio_sorted=tmp_path / "out", review=tmp_path / "rev", state=tmp_path / "state",
+                      done=tmp_path / "done", protected=[], fix_xhe_aac=False, write_tags=False, workers=6)
+    books = load_books([src])
+    for b in books:
+        b.status = Status.READY
+    ex = Executor(folders, mode="move")
+    assert ex.workers == 6
+    result = ex.run(Planner(folders).plan(books), books)
+    assert result.count("done") == 12 and [r.book for r in result.results] == books   # the order given
+    assert len(list((tmp_path / "out").rglob("*.m4b"))) == 12 and not any(p.is_file() for p in src.rglob("*"))
+    undo(next(r for r in list_runs(folders.state / "history") if r.run_id == result.run_id))
+    assert len(list(src.rglob("*.m4b"))) == 12 and not any((tmp_path / "out").rglob("*.m4b"))
+
+
+def test_audiobook_and_ebook_in_one_folder_never_lose_files(tmp_path, monkeypatch):
+    """Mushoku Tensei Vol. 14: the m4b and the epub side by side, sorted at once with Done off - the
+    ebook must not take the audiobook's cover/metadata for its own leftovers."""
+    import app.core.executor as ex
+    monkeypatch.setattr(ex, "recycle_bin_on", lambda p: False)
+    from app.core.models import Status
+    src = tmp_path / "in"
+    for n in range(1, 7):
+        d = src / "Series" / f"Volume {n:02d}"
+        d.mkdir(parents=True)
+        (d / f"Series, Vol. {n:02d}.m4b").write_bytes(b"audio" * n)
+        (d / f"Series - Volume {n:02d}.epub").write_bytes(b"epub" * n)
+        for extra in ("book info.txt", "metadata.json", "cover-adb.jpg", "cover-ln.jpg"):
+            (d / extra).write_bytes(extra.encode())
+    folders = Folders(audio_sorted=tmp_path / "out", books_sorted=tmp_path / "books", review=tmp_path / "rev",
+                      state=tmp_path / "state", done=tmp_path / "done", protected=[], fix_xhe_aac=False,
+                      write_tags=False, workers=8, keep_done=False)
+    books = load_books([src])
+    for b in books:
+        b.meta.authors, b.status = ["Someone"], Status.READY
+    result = Executor(folders, mode="move").run(Planner(folders).plan(books), books)
+    assert result.count("done") == len(books), [r.detail for r in result.results if r.status != "done"]
+    for name in ("book info.txt", "cover-adb.jpg"):                       # the audiobook kept its files
+        assert len(list((tmp_path / "out").rglob(name))) == 6

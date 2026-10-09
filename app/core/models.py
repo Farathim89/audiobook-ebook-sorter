@@ -45,6 +45,7 @@ def _empty(value) -> bool:
 @dataclass
 class Metadata:
     title: str | None = None
+    subtitle: str | None = None  # 'I Can Go Back to My World Whenever I Want! Volume 2' (the volume may be only here)
     authors: list[str] = field(default_factory=list)
     narrators: list[str] = field(default_factory=list)
     series: str | None = None
@@ -87,7 +88,9 @@ class Book:
     kind_known: bool = False  # comics: manga-or-comic was decided (AniList asked, a name hint, or by hand)
     light_novel: bool = False  # AniList knows it as a NOVEL, or the title says so
     candidates: list = field(default_factory=list)  # online matches (providers.Candidate), best first
+    credits: list[str] = field(default_factory=list)  # names marked illustrator/translator in its files
     doubt: str = ""  # an online source disagrees with our metadata (keeps the book on "check")
+    ai: dict = field(default_factory=dict)  # the AI's last answer for this book (see core.ai)
 
     @property
     def main_file(self) -> Path:

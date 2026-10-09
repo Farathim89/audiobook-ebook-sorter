@@ -109,5 +109,8 @@ def test_folder_names_use_a_short_form_of_long_series():
     assert folder_series("Ascendance of a Bookworm: Part 5") == "Ascendance of a Bookworm: Part 5"
     assert folder_series("Ascendance of a Bookworm: Hannelore's Fifth Year at the Royal Academy") == \
         "Hannelore's Fifth Year at the Royal Academy"
+    # the subtitle only tells an author's series apart; else the main name ('Reborn as a Space Mercenary')
+    assert folder_series("Reborn as a Space Mercenary: I Woke Up Piloting the Strongest Starship!",
+                         shared_head=False) == "Reborn as a Space Mercenary"
     assert folder_series("Hell Mode: The Hardcore Gamer Dominates Another World with Garbage Balancing - "
                          "Summoner of the Beginning") == "Hell Mode"

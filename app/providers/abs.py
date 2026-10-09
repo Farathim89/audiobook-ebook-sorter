@@ -1,4 +1,4 @@
-"""Audiobookshelf's own API (your server, your API key): read and reorder collections."""
+"""Audiobookshelf's own API (your server, your API key): collections, library items, listening progress."""
 from __future__ import annotations
 
 import json
@@ -17,7 +17,29 @@ class AbsClient:
             "Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json",
             "User-Agent": "BookSorter/1.0"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read() or b"null")
+            raw = resp.read()
+        try:
+            return json.loads(raw or b"null")
+        except ValueError:
+            return raw.decode("utf-8", "replace")  # some calls answer just 'OK'
+
+    def me(self) -> dict:
+        return self._call("GET", "/me") or {}
+
+    def libraries(self) -> list[dict]:
+        return (self._call("GET", "/libraries") or {}).get("libraries") or []
+
+    def library_items(self, library_id: str) -> list[dict]:
+        out, page = [], 0
+        while True:
+            res = self._call("GET", f"/libraries/{library_id}/items?limit=500&page={page}&minified=0") or {}
+            out += res.get("results") or []
+            page += 1
+            if page * 500 >= (res.get("total") or 0):
+                return out
+
+    def set_progress(self, item_id: str, body: dict) -> None:
+        self._call("PATCH", f"/me/progress/{item_id}", body)
 
     def collections(self) -> list[dict]:
         return (self._call("GET", "/collections") or {}).get("collections") or []

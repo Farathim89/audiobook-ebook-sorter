@@ -251,3 +251,22 @@ def test_unknown_comic_stays_undecided_and_ln_authors_comics_are_manga(tmp_path)
     ln.light_novel = True
     OnlineLookup._kind_from_author([comic, ln])
     assert comic.manga
+
+
+def test_several_novels_of_the_author_fit_keep_our_own_series():
+    media = [_media("NOVEL", "Bungo Stray Dogs: BEAST", "Bungou Stray Dogs BEAST", [("Story", "Kafka Asagiri")]),
+             _media("NOVEL", "Bungo Stray Dogs: Osamu Dazai's Entrance Exam", "x", [("Story", "Kafka Asagiri")])]
+    cand = AniList(FakeHttp(media)).series("Bungo Stray Dogs", novel=True, authors=["Kafka Asagiri"])
+    assert cand is not None and cand.exact                      # a light novel, but not one picked by name
+    assert cand.meta.series == "Bungo Stray Dogs" and cand.meta.cover_url is None
+    book = Book(BookType.EBOOK, [Path("v1.epub")], Path("."))
+    book.meta = Metadata(title="Bungo Stray Dogs, Vol. 1", series="Bungo Stray Dogs", series_index=1,
+                         authors=["Kafka Asagiri"])
+    apply_candidate(book, cand)
+    assert book.meta.series == "Bungo Stray Dogs" and book.light_novel
+
+
+def test_one_novel_of_the_author_still_gives_the_full_name():
+    media = [_media("NOVEL", "Hell Mode: The Hardcore Gamer Dominates", "x", [("Story", "Hamuo")])]
+    cand = AniList(FakeHttp(media)).series("Hell Mode", novel=True, authors=["Hamuo"])
+    assert cand is not None and not cand.exact and cand.meta.series.startswith("Hell Mode: The Hardcore")

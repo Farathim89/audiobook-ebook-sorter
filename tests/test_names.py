@@ -110,3 +110,10 @@ def test_swedish_reader_in_folder_name():
     m = parse_name("Volume 01 - (1997) Harry Potter och de vises sten (Björn Kjellman läser)", BookType.AUDIO)
     assert m.narrators == ["Björn Kjellman"] and "läser" not in (m.title or "")
     assert parse_name("Bröderna Lejonhjärta (uppläsare: Tomas Schweder)", BookType.AUDIO).narrators == ["Tomas Schweder"]
+
+
+def test_year_part_stays_in_the_series_name():
+    from app.readers.names import split_series_from_title
+    assert split_series_from_title("Classroom of the Elite: Year 2 Vol. 6") is None
+    assert split_series_from_title("The Way of Kings: The Stormlight Archive, Book 1") == \
+        ("The Way of Kings", "The Stormlight Archive", 1.0)

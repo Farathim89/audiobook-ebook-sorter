@@ -5,6 +5,7 @@ Audiobooks -> Audible.  Manga/comics, and light novels without an author -> AniL
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Callable
 
@@ -52,6 +53,63 @@ def _best_first(cands: list[Candidate]) -> list[Candidate]:
 def main_title(name: str) -> str:
     """'Hell Mode: The Hardcore Gamer...' -> 'Hell Mode'."""
     return re.split(r"\s*[:：]\s*", name)[0].strip() or name
+
+
+def _comics_like_their_folder(books: list[Book]) -> None:
+    """Manga volumes that only their file name names:
+    - 'Youjo Senki Vol. 29.cbz' in a folder 'The Saga of Tanya the Evil', next to 28 volumes with that
+      (English) series name by the same author: the same series;
+    - 'Solo Leveling Ragnarok 047 - Season 1 End.cbz' (no author found) next to '... 046' by Daul:
+      series, number, author and kind of its neighbours."""
+    from collections import Counter  # noqa: PLC0415
+    from .metadata import update_status  # noqa: PLC0415
+    comics = [b for b in books if b.type is BookType.COMIC]
+    series_count = Counter((fold(b.author or ""), fold(b.meta.series)) for b in comics if b.meta.series)
+    names = {fold(b.meta.series): b.meta.series for b in comics if b.meta.series}
+    by_folder: dict[str, list[Book]] = {}
+    for b in comics:
+        by_folder.setdefault(os.path.normcase(str(b.main_file.parent)), []).append(b)
+    for b in comics:
+        if b.sources.get("series") == "manual":
+            continue
+        folder = fold(b.main_file.parent.name)
+        if b.meta.series and fold(b.meta.series) != folder and folder in names and b.author \
+                and series_count[(fold(b.author), folder)] > series_count[(fold(b.author), fold(b.meta.series))]:
+            b.meta.series = names[folder]
+            continue
+        if b.author or b.meta.series:
+            continue
+        mates = [m for m in by_folder[os.path.normcase(str(b.main_file.parent))] if m is not b and m.author and m.meta.series]
+        for mate in mates:
+            hit = re.match(re.escape(mate.meta.series) + r"\W+0*(\d+(?:\.\d+)?)\b", b.meta.title or b.main_file.stem, re.I)
+            if hit:
+                b.meta.series, b.meta.series_index = mate.meta.series, float(hit.group(1))
+                b.meta.authors = list(mate.meta.authors)
+                b.manga, b.kind_known = mate.manga, mate.kind_known
+                for f in ("series", "series_index", "authors"):
+                    b.sources[f] = "sibling"
+                if not b.meta.title or b.sources.get("title") in GUESSED:
+                    b.meta.title = f"{mate.meta.series}, Vol. {hit.group(1).lstrip('0') or '0'}"
+                    b.sources["title"] = "sibling"
+                update_status(b)
+                break
+
+
+def _doubled_pen_names(books: list[Book]) -> None:
+    """'Twoony Twoony' (a shop filled both name fields) is 'Twoony' when another book here says 'Twoony'.
+    Only then: 'Asato Asato' (86) is a real name written that way."""
+    from ..readers.names import single_name  # noqa: PLC0415
+    singles = {fold(a) for b in books for a in b.meta.authors if " " not in a.strip()}
+    for b in books:
+        if b.sources.get("authors") == "manual":
+            continue
+        new = [s if (s := single_name(a)) != a and fold(s) in singles else a for a in b.meta.authors]
+        if new != b.meta.authors:
+            b.meta.authors = list(dict.fromkeys(new))
+            if b.doubt and "lists this title by" in b.doubt:
+                b.doubt = ""  # 'Audible lists this title by Twoony Twoony' - the same person
+            from .metadata import update_status  # noqa: PLC0415
+            update_status(b)
 
 
 def _close_to(name: str, names: set[str]) -> bool:
@@ -119,6 +177,14 @@ class OnlineLookup:
         self.fandom = Fandom(Http(cache, min_interval=0.5))
         self.wikis = parse_wiki_list(folders.fandom_wikis)
         self.fandom_auto = folders.fandom_auto
+        from .rules import Rules  # noqa: PLC0415
+        self.rules = Rules.load(folders.state)  # learned from your edits
+        from .publishers import Publishers  # noqa: PLC0415
+        self.publishers = Publishers.load(folders.state)
+        from .ai import make_ai  # noqa: PLC0415
+        self.ai = make_ai(folders)  # None when off
+        if self.ai is not None:
+            self.ai.rules = self.rules
 
     @staticmethod
     def wants_lookup(book: Book) -> bool:
@@ -131,6 +197,7 @@ class OnlineLookup:
     def run(self, books: list[Book], on_progress: Callable[[int, int, Book], None] | None = None,
             cancelled: Callable[[], bool] = lambda: False) -> None:
         todo = [b for b in books if self.wants_lookup(b)]
+        own_series = {id(b): b.meta.series for b in books}  # what the books' own files say, before the shops
         for b in books:
             if b not in todo:
                 b.looked_up = True  # nothing to ask for this one
@@ -140,6 +207,7 @@ class OnlineLookup:
             book.looked_up = True
             if book.type is BookType.AUDIO:
                 self.lookup(book)
+                self.fill_narrators(book)
                 self.mark_light_novel(book)
             else:
                 self.lookup_anilist(book)
@@ -151,9 +219,28 @@ class OnlineLookup:
             if on_progress:
                 on_progress(i, len(todo), book)
         self._kind_from_author(books, self.manga_authors_in_library)
+        _drop_credited(books)
+        _latin_author_names(books)
+        _doubled_pen_names(books)
+        _full_series_names(books)
+        _keep_shared_series(books, own_series)
+        _series_head_vote(books)
+        _from_folder_sibling(books)
+        _roles_by_series(books)
+        self.publishers.apply(books)  # 'Yen Audio' -> light novel (Tools > Publishers)
         _same_kind_per_series(books)
+        _lone_extra_authors(books)  # after the kinds: an ebook becomes a light novel next to its audiobook
         _note_mixed_kinds(books)
         _spin_offs_of_light_novels(books)
+        _comics_like_their_folder(books)  # last: after the shared-series vote
+        self.rules.apply(books)  # your own fixes win over the shops
+        if self.ai is not None and not cancelled():
+            self.ai.run(books, cancelled=cancelled)  # only the books still unsure
+            self.rules.apply(books)  # and your fixes still win over the AI's spelling
+            for b in books:  # 'Yuka Tachibana, 橘 由華' - the English name is enough
+                latin = [a for a in b.meta.authors if not _CJK_NAME_RE.search(a)]
+                if latin and len(latin) < len(b.meta.authors) and b.sources.get("authors") != "manual":
+                    b.meta.authors = latin
 
     @property
     def manga_authors_in_library(self) -> set[str]:
@@ -262,6 +349,46 @@ class OnlineLookup:
             book.doubt = f"{c.provider.capitalize()} lists this title by {c.meta.authors[0]} - check the author"
         update_status(book)
 
+    NARRATOR_REGIONS = ("uk", "ca", "au")  # Audible stores that often list a narrator the US one lacks
+
+    def fill_narrators(self, book: Book) -> None:
+        """No narrator after the lookup (a new release, an incomplete shop page): ask the other Audible
+        stores (same ASIN) and Storytel (same title and author). Only the narrator is taken."""
+        m = book.meta
+        if book.type is not BookType.AUDIO or m.narrators:
+            return
+        found: list[str] = []
+        source = ""
+        from ..readers.sidecar import _own_folder, read_book_info  # noqa: PLC0415
+        authors, narrators, _ = read_book_info(book.folder or _own_folder(book))
+        if narrators and {fold(a) for a in authors} & {fold(a) for a in m.authors}:
+            found, source = [n for n in narrators if fold(n) not in {fold(a) for a in m.authors}], "sidecar"
+        if m.asin and not found:
+            for region in self.NARRATOR_REGIONS:
+                if region == self.audible.region:
+                    continue
+                try:
+                    cands = Audible(self.audible.http, region).by_asin(m.asin)
+                except OSError:
+                    continue
+                if cands and cands[0].meta.narrators:
+                    found, source = cands[0].meta.narrators, f"audible.{region}"
+                    break
+        if not found and self.storytel and m.title:
+            try:
+                ranked = rank(book, self.storytel.search(f"{m.title} {book.author or ''}".strip()), language="")
+            except OSError:
+                ranked = []
+            sure = next((c for c in ranked if c.confident and c.meta.narrators), None)
+            if sure:
+                found, source = sure.meta.narrators, "storytel"
+        if found:
+            m.narrators = list(found)
+            book.sources["narrators"] = source
+        else:
+            book.notes = [n for n in book.notes if not n.startswith("narrator not listed")]
+            book.notes.append("narrator not listed anywhere (Audible, Storytel) - add it with Edit if you know it")
+
     def _audible(self, book: Book) -> list[Candidate]:
         """Try the ASIN, then a few searches from narrow to broad; stop at the first sure match."""
         m = book.meta
@@ -275,17 +402,53 @@ class OnlineLookup:
             queries += [dict(title=series, narrator=who), dict(keywords=f"{series} Volume {m.series_index:g}")]
         found: dict[str, Candidate] = {}
         if m.asin:
-            found.update((c.meta.asin or c.url, c) for c in self.audible.by_asin(m.asin))
+            same = self.audible.by_asin(m.asin)
+            ours = book_length(book)
+            labelled = {fold(n) for n in m.narrators} if book.sources.get("narrators") == "label" else set()
+            other_reader = bool(same and labelled and same[0].meta.narrators
+                                and not labelled & {fold(n) for n in same[0].meta.narrators})
+            if same and (other_reader or same[0].length and ours
+                         and abs(same[0].length - ours) / ours > LENGTH_TOLERANCE):
+                # Harry Potter: metadata.json has the Stephen Fry edition's ASIN (12.05 h), the files are
+                # Jim Dale's (11.80 h) - another edition: not this book's ASIN, cover or narrator
+                book.notes.append(f"the ASIN {m.asin} is another edition ({same[0].length / 3600:.1f} h, "
+                                  f"read by {', '.join(same[0].meta.narrators[:2]) or '?'}; this book "
+                                  f"{ours / 3600:.1f} h) - not used")
+                m.asin = None
+                book.sources.pop("asin", None)
+                if book.sources.get("narrators") in ("sidecar", "tags") and same[0].meta.narrators \
+                        and {fold(n) for n in m.narrators} == {fold(n) for n in same[0].meta.narrators}:
+                    m.narrators = []  # that edition's reader, not this one's
+                same = []
+            found.update((c.meta.asin or c.url, c) for c in same)
         seen = set()
         for q in queries:
             key = tuple(sorted((k, v) for k, v in q.items() if v))
             if key in seen:
                 continue
             seen.add(key)
-            if any(c.confident for c in rank(book, list(found.values()), self.audible.language)):
+            ours = book_length(book)
+            if any(c.confident and not (c.length and ours and abs(c.length - ours) / ours > LENGTH_TOLERANCE)
+                   for c in rank(book, list(found.values()), self.audible.language)):
                 break
             found.update((c.meta.asin or c.url, c) for c in self.audible.search(**q))
-        return rank(book, list(found.values()), self.audible.language)
+        ranked = rank(book, list(found.values()), self.audible.language)
+        ours = book_length(book)
+        labelled = {fold(n) for n in m.narrators} if book.sources.get("narrators") == "label" else set()
+        cast = {fold(n) for n in m.narrators} if len(m.narrators) >= 2 \
+            and book.sources.get("narrators") in ("sidecar", "tags") else set()
+        cast -= {fold(a) for a in m.authors}
+        for c in ranked:
+            if c.confident and c.length and ours and abs(c.length - ours) / ours > LENGTH_TOLERANCE:
+                # same title and author, other length: another edition (Stephen Fry instead of Jim Dale)
+                c.confident = False
+            if c.confident and labelled and c.meta.narrators and not labelled & {fold(n) for n in c.meta.narrators}:
+                # the files say 'Narrated By Jim Dale': Stephen Fry's edition is another recording
+                c.confident = False
+            if c.confident and cast and c.meta.narrators and not cast & {fold(n) for n in c.meta.narrators}:
+                # the files name 7 readers, Audible's match only David Buck: another recording
+                c.confident = False
+        return _best_first(ranked)
 
     def _storytel(self, book: Book) -> list[Candidate]:
         """Storytel also sells translations under the same title, so a match is only 'sure' when the
@@ -404,9 +567,35 @@ class OnlineLookup:
     def mark_light_novel(self, book: Book) -> None:
         """Audiobooks of light novels go to their own folder: hint in the name, or AniList NOVEL."""
         if book.light_novel:
+            if book.meta.series and (len(book.meta.authors) > 1 or (book.meta.authors and all(
+                    _CJK_NAME_RE.search(a) for a in book.meta.authors))):  # the illustrator / a Japanese name
+                name = re.sub(r"(?i)\s+series$", "", _LN_SUFFIX_RE.sub("", book.meta.series))
+                if (cand := self._ln_candidate([name], book.meta.authors)) is not None:
+                    _only_original_author(book, cand)
             return
         if book.meta.series:
             book.light_novel = self.is_light_novel(book.meta.series, book.meta.authors)
+            if book.light_novel:
+                name = re.sub(r"(?i)\s+series$", "", _LN_SUFFIX_RE.sub("", book.meta.series))
+                bare = re.sub(r"(?i)^(?:the|an?)\s+", "", name)
+                cand = self._ln_candidate(dict.fromkeys([name, bare, f"A {bare}", f"The {bare}"]),
+                                          book.meta.authors)
+                if cand is not None:
+                    _only_original_author(book, cand)
+            if not book.light_novel and book.meta.title:
+                # Audible: series 'I Can Go Back to My World Whenever I Want', AniList: 'Peddler in Another
+                # World: I Can Go Back to My World Whenever I Want!' - found by the title
+                name = re.sub(r"(?i),?\s*vol(?:ume)?\.?\s*\d+.*$", "", main_title(book.meta.title)).strip()
+                try:
+                    cand = self.anilist.series(name, novel=True, prefix_ok=True, authors=book.meta.authors) \
+                        if name else None
+                except OSError:
+                    cand = None
+                full = cand.meta.series if cand else None
+                parts = [fold(x) for x in re.split(r"\s*[:：]\s*", full or "")]
+                if full and any(x.startswith(fold(book.meta.series)) for x in parts):
+                    book.light_novel = True
+                    book.meta.series = full
         elif book.meta.title:  # a stand-alone audiobook: exact title AND the same author on AniList
             if re.search(r"(?i)\blight novel\b|\(novel\)", book.meta.title):
                 book.light_novel = True
@@ -426,11 +615,17 @@ class OnlineLookup:
         # Audible drops the article ('Cave King's Road...' - AniList: 'A Cave King's Road...'): try both
         bare = re.sub(r"(?i)^(?:the|an?)\s+", "", name)
         names = dict.fromkeys([name, bare, f"A {bare}", f"The {bare}"])
+        return self._ln_candidate(names, authors) is not None
+
+    def _ln_candidate(self, names, authors: list[str] | None = None):
+        """AniList's NOVEL entry for the first of these names that it knows (or None)."""
         try:
-            return any(self.anilist.series(n, novel=True, prefix_ok=True, authors=authors) is not None
-                       for n in names)
+            for n in names:
+                if (cand := self.anilist.series(n, novel=True, prefix_ok=True, authors=authors)) is not None:
+                    return cand
         except OSError:
-            return False
+            pass
+        return None
 
     def search(self, book: Book, query: str) -> list[Candidate]:
         """Free-text search from the GUI, ranked against the book."""
@@ -455,8 +650,16 @@ def apply_candidate(book: Book, cand: Candidate) -> None:
         apply_anilist(book, cand)
         return
     had_volume = bool(_VOLUME_MARK_RE.search(book.meta.title or ""))
+    own_subtitle = book.meta.subtitle
     book.override(cand.meta, cand.provider)
     m = book.meta
+    if own_subtitle:
+        # Audible's 'Legend of the Galactic Heroes, Vol. 3' carries volume 1's subtitle 'Dawn': the book's
+        # own subtitle ('Endurance') stays; the shop's only fills an empty one
+        m.subtitle = own_subtitle
+    if m.title:
+        from ..readers.names import words_to_numbers  # noqa: PLC0415
+        m.title = words_to_numbers(m.title)  # 'Constellations Volume One' -> '... Volume 1'
     # light novels: the shop calls every volume just "<Series>" - keep the volume in the title
     if m.series_index is not None and m.title and not _VOLUME_MARK_RE.search(m.title) \
             and not re.search(r"\d", m.title) and (had_volume or _starts_series(m.title, m.series)):
@@ -472,15 +675,235 @@ def _starts_series(title: str, series: str | None) -> bool:
     return bool(t and s) and s != t and s.startswith(t)  # a title that IS the series stays as it is
 
 
-def _same_kind_per_series(books: list[Book]) -> None:
-    """Volumes of one series are all light novels when one is (AniList may know only one spelling)."""
+_CJK_NAME_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+
+
+def _keep_shared_series(books: list[Book], own: dict[int, str | None]) -> None:
+    """Every Monogatari volume says 'Monogatari' #1..#8 in its own files; Audible calls volume 1
+    'Bakemonogatari'. When 2+ other volumes of the author share the book's own series name, the
+    book keeps it - one series folder for them all."""
+    from collections import Counter  # noqa: PLC0415
+    from .consistency import series_key  # noqa: PLC0415
+    shared: Counter = Counter()
+    for b in books:
+        if (name := own.get(id(b))) and b.author:
+            shared[(fold(b.author), series_key(name))] += 1
+    for b in books:
+        name = own.get(id(b))
+        if not name or not b.meta.series or not b.author or b.sources.get("series") == "manual":
+            continue
+        if series_key(b.meta.series) == series_key(name) or shared[(fold(b.author), series_key(name))] < 3:
+            continue
+        parts = re.split(r"\s*[:：]\s*", b.meta.series, maxsplit=1)
+        if len(parts) == 2 and series_key(parts[1]) == series_key(name):
+            continue  # 'Trapped in a Dating Sim: The World of Otome Games...' is the whole of 'The World of...'
+        from ..readers.names import parse_volume  # noqa: PLC0415
+        vol = parse_volume(b.meta.title or "")
+        if vol and len(parts) == 2 and fold(vol[0]) == fold(b.meta.series):
+            continue  # the title names its own sub-series: 'Trapped in a Dating Sim: Otome Games Are Tough for Us, Too!, Vol. 1'
+        b.meta.series = name
+
+
+def _series_head_vote(books: list[Book]) -> None:
+    """The audiobooks say 'Min-Maxing My TRPG Build in Another World', two ebooks 'Min-Maxing My TRPG
+    Build in Another World: Preach the Good Word of Mr. Henderson': one series - the name most volumes use."""
+    from collections import Counter  # noqa: PLC0415
+    by_author: dict[str, Counter] = {}
+    for b in books:
+        if b.meta.series and b.author:
+            by_author.setdefault(fold(b.author), Counter())[b.meta.series] += 1
+    for b in books:
+        if not b.meta.series or not b.author or b.sources.get("series") == "manual":
+            continue
+        names = by_author.get(fold(b.author), Counter())
+        mine = b.meta.series
+        head = re.split(r"\s*[:：]\s*", mine, maxsplit=1)[0]
+        kin = {n: c for n, c in names.items()
+               if n != mine and (fold(n) == fold(head) or re.split(r"\s*[:：]\s*", n, maxsplit=1)[0] == mine)}
+        for name, count in kin.items():
+            if count > names[mine]:
+                b.meta.series = name
+
+
+def _from_folder_sibling(books: list[Book]) -> None:
+    """'Lily Clairet, Vol. 02.epub' has no metadata (author guessed from the folder) but lies next to
+    'Lily Clairet, Vol. 02.m4b', which knows the author: the same book - take author, series, number
+    and kind from it."""
+    from .consistency import series_key  # noqa: PLC0415
+    from .metadata import GUESSED, update_status  # noqa: PLC0415
+    by_folder: dict[str, list[Book]] = {}
+    for b in books:
+        by_folder.setdefault(os.path.normcase(str(b.main_file.parent)), []).append(b)
+    for group in by_folder.values():
+        sure = [b for b in group if b.meta.authors and b.sources.get("authors") not in GUESSED]
+        for b in group:
+            if b in sure or b.sources.get("authors") == "manual":
+                continue
+            mate = next((s for s in sure if s.type is not b.type and (
+                (b.meta.series and s.meta.series and series_key(b.meta.series) == series_key(s.meta.series)
+                 and b.meta.series_index == s.meta.series_index)
+                or fold(b.meta.title or "") == fold(s.meta.title or ""))), None)
+            if mate is None:
+                continue
+            b.meta.authors = list(mate.meta.authors)
+            b.sources["authors"] = "sibling"
+            for f in ("series", "series_index"):
+                if getattr(mate.meta, f) is not None and b.sources.get(f) in (*GUESSED, None):
+                    setattr(b.meta, f, getattr(mate.meta, f))
+                    b.sources[f] = "sibling"
+            if b.sources.get("title") in GUESSED:
+                b.sources["title"] = "sibling"
+            if b.type is not BookType.COMIC and mate.light_novel:
+                b.light_novel = True
+            update_status(b)
+
+
+def _roles_by_series(books: list[Book]) -> None:
+    """A download whose metadata.json swaps writer and reader on every volume ('Cliff Kurt' by...):
+    where Audible was sure, the volumes are right - the others follow them. A name that is the
+    narrator on most volumes of the series is the narrator; one that is mostly the author, the author."""
+    from collections import Counter  # noqa: PLC0415
     from .consistency import series_key  # noqa: PLC0415
     groups: dict[str, list[Book]] = {}
     for b in books:
         if b.type is BookType.AUDIO and b.meta.series:
             groups.setdefault(series_key(b.meta.series), []).append(b)
+    for vols in groups.values():
+        if len(vols) < 3:
+            continue
+        as_author = Counter(fold(a) for b in vols for a in b.meta.authors)
+        as_reader = Counter(fold(n) for b in vols for n in b.meta.narrators)
+        for b in vols:
+            if b.sources.get("authors") == "manual":
+                continue
+            readers = [a for a in b.meta.authors if as_reader[fold(a)] > as_author[fold(a)]]
+            writers = [n for n in b.meta.narrators if as_author[fold(n)] > as_reader[fold(n)]]
+            if readers and writers:
+                b.meta.authors = writers + [a for a in b.meta.authors if a not in readers and a not in writers]
+                b.meta.narrators = readers + [n for n in b.meta.narrators if n not in writers and n not in readers]
+                b.doubt = ""  # 'Audible lists this title by ...' - it was the swap
+                update_status(b)
+
+
+def _full_series_names(books: list[Book]) -> None:
+    """Volume 1 knows the whole name 'I Parry Everything: What Do You Mean...', volume 2 only Audible's
+    'What Do You Mean...': both get the whole name (else they end up in two series folders)."""
+    full: dict[tuple[str, str], str] = {}
+    for b in books:
+        if b.meta.series and ":" in b.meta.series:
+            tail = b.meta.series.split(":", 1)[1]
+            full.setdefault((fold(b.author or ""), fold(tail)), b.meta.series)
+    for b in books:
+        if b.meta.series and b.sources.get("series") != "manual" \
+                and (name := full.get((fold(b.author or ""), fold(b.meta.series)))):
+            b.meta.series = name
+
+
+def _lone_extra_authors(books: list[Book]) -> None:
+    """A light novel series where the other volumes credit just 'Kisetsu Morita': the one volume that
+    also lists 'Yusuke Shiba' (the illustrator) gets just the author too."""
+    from collections import Counter  # noqa: PLC0415
+    from .consistency import series_key  # noqa: PLC0415
+    groups: dict[str, list[Book]] = {}
+    for b in books:
+        if b.light_novel and b.meta.series and b.meta.authors and b.sources.get("authors") != "manual":
+            groups.setdefault(series_key(b.meta.series), []).append(b)
+    for vols in groups.values():
+        singles = Counter(fold(b.meta.authors[0]) for b in vols if len(b.meta.authors) == 1)
+        if sum(singles.values()) < 2:
+            continue
+        lead = singles.most_common(1)[0][0]
+        credited = Counter(fold(a) for b in vols for a in b.meta.authors)
+        for b in vols:
+            if len(b.meta.authors) == 1 and fold(b.meta.authors[0]) != lead and credited[fold(b.meta.authors[0])] == 1                     and singles[lead] >= 2:
+                # the epub of volume 4 names only 'Suzuhito Yasuda' (the illustrator); every other volume
+                # is by 'Fujino Omori'
+                b.meta.authors = [next(a for v in vols for a in v.meta.authors if fold(a) == lead)]
+                continue
+            if len(b.meta.authors) > 1 and lead in {fold(a) for a in b.meta.authors}:
+                b.meta.authors = [a for a in b.meta.authors if fold(a) == lead or credited[fold(a)] > 1
+                                  and credited[fold(a)] >= sum(singles.values())]
+
+
+def _only_original_author(book: Book, cand: Candidate) -> None:
+    """A light novel is by its original author (AniList's 'Story'); Audible also credits the illustrator
+    ('Kisetsu Morita, Yusuke Shiba'). Our own spelling of the author is kept."""
+    if book.sources.get("authors") == "manual" or not cand.meta.authors:
+        return
+    if book.meta.authors and all(_CJK_NAME_RE.search(a) for a in book.meta.authors) \
+            and not _CJK_NAME_RE.search(cand.meta.authors[0]):
+        book.meta.authors = [cand.meta.authors[0]]  # '赤井まつり' -> 'Matsuri Akai' (a folder you can read)
+        return
+    if len(book.meta.authors) < 2:
+        return
+    from .text import name_key  # noqa: PLC0415
+    original = name_key(cand.meta.authors[0])
+    ours = [a for a in book.meta.authors if name_key(a) == original or _close_to(fold(a), {fold(cand.meta.authors[0])})]
+    if ours:
+        book.meta.authors = ours[:1]
+
+
+def _latin_author_names(books: list[Book]) -> None:
+    """Audible credits '猫子, Necoco' on some volumes and only '猫子' on others: the same person -
+    every volume of that series gets 'Necoco' (a folder name you can read and type)."""
+    from .consistency import series_key  # noqa: PLC0415
+    alias: dict[tuple[str, str], str] = {}
+    for b in books:
+        cjk = [a for a in b.meta.authors if _CJK_NAME_RE.search(a)]
+        latin = [a for a in b.meta.authors if not _CJK_NAME_RE.search(a)]
+        if cjk and latin:
+            for a in cjk:
+                alias.setdefault((series_key(b.meta.series or ""), a), latin[0])
+    # a volume with ONLY the Japanese name ('三嶋与夢') while the others say 'Yomu Mishima'
+    from collections import Counter  # noqa: PLC0415
+    latin_lead: dict[str, Counter] = {}
+    for b in books:
+        latin = [a for a in b.meta.authors if not _CJK_NAME_RE.search(a)]
+        if latin and b.meta.series:
+            latin_lead.setdefault(series_key(b.meta.series), Counter())[latin[0]] += 1
+    for b in books:
+        if b.sources.get("authors") == "manual":
+            continue
+        key = series_key(b.meta.series or "")
+        names = [alias.get((key, a), a) for a in b.meta.authors]
+        if names and all(_CJK_NAME_RE.search(a) for a in names) and latin_lead.get(key):
+            names = [latin_lead[key].most_common(1)[0][0]]
+        elif any(not _CJK_NAME_RE.search(a) for a in names):
+            names = [a for a in names if not _CJK_NAME_RE.search(a)]
+        b.meta.authors = list(dict.fromkeys(names))
+
+
+def _drop_credited(books: list[Book]) -> None:
+    """Audible lists the illustrator as an author ('Kafka Asagiri, Sango Harukawa'); one volume's own
+    metadata says 'Sango Harukawa - illustrator': not an author of any of them."""
+    credited = {fold(n) for b in books for n in b.credits}
+    if not credited:
+        return
+    for b in books:
+        kept = [a for a in b.meta.authors if fold(a) not in credited]
+        if kept and kept != b.meta.authors and b.sources.get("authors") != "manual":
+            b.meta.authors = kept
+
+
+def _same_kind_per_series(books: list[Book]) -> None:
+    """Volumes of one series are all light novels when one is (AniList may know only one spelling) -
+    audiobooks and ebooks alike ('Min-Maxing' ebooks next to their light novel audiobooks)."""
+    from .consistency import series_key  # noqa: PLC0415
+    groups: dict[tuple[str, str], list[Book]] = {}
+    for b in books:
+        if b.type is not BookType.COMIC and b.meta.series:
+            groups.setdefault((series_key(b.meta.series), fold(b.author or "")), []).append(b)
     for group in groups.values():
         if any(b.light_novel for b in group):
+            for b in group:
+                b.light_novel = True
+    # the same book as audio and ebook ('I Want to Eat Your Pancreas'): one kind for both
+    by_title: dict[tuple[str, str], list[Book]] = {}
+    for b in books:
+        if b.type is not BookType.COMIC and b.meta.title and b.author:
+            by_title.setdefault((fold(b.author), fold(b.meta.title)), []).append(b)
+    for group in by_title.values():
+        if len(group) > 1 and any(b.light_novel for b in group):
             for b in group:
                 b.light_novel = True
 
@@ -507,9 +930,14 @@ def apply_anilist(book: Book, cand: Candidate) -> None:
     else:
         book.light_novel = True
         book.absorb(Metadata(authors=m.authors), cand.provider)
+        _only_original_author(book, cand)
     book.absorb(Metadata(description=m.description, cover_url=m.cover_url), cand.provider)
     if book.sources.get("series") in GUESSED:
         book.sources["series"] = cand.provider  # AniList only answers an exact series match: confirmed
+    b = book.meta
+    if book.sources.get("title") in GUESSED and b.series and b.series_index is not None and b.title \
+            and fold(b.title) == fold(f"{b.series}, Vol. {b.series_index:g}"):
+        book.sources["title"] = cand.provider  # 'Series, Vol. 12' from a confirmed series + number
     if not cand.exact:  # only 'Hell Mode' matched: take the real, full name
         _use_full_series_name(book, m.series, cand.provider)
     update_status(book)

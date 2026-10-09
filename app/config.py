@@ -25,7 +25,7 @@ class Folders:
     books_sorted: Path = DEFAULT_BASE / "Sorted" / "Books"
     review: Path = DEFAULT_BASE / "Sorted" / "Review"
     duplicates: Path = DEFAULT_BASE / "Sorted" / "Duplicates"  # extra copies moved out of Incoming
-    auto_move_duplicates: bool = False  # auto-sort also moves extra copies / books already in the library
+    auto_move_duplicates: bool = True  # after a sort: extra copies / books the library has leave Incoming
     done: Path = DEFAULT_BASE / "Sorted" / "Done"  # originals of sorted books + their leftover cover/metadata
     move_originals: bool = False  # sorting MOVES the originals out of Incoming (else copies, keeps them)
     keep_done: bool = True  # Move mode keeps old copies + leftovers in Done (off: Recycle Bin, or deleted for good)
@@ -55,8 +55,17 @@ class Folders:
     # xHE-AAC -> plain AAC (ABS can't play xHE). Decoded by Windows' own xHE decoder - ffmpeg loses ~24%
     # of the packets (dropouts) - so on other systems the conversion is refused instead.
     fix_xhe_aac: bool = True
+    workers: int = 0  # books sorted at once (0 = auto: about one per 3 CPU cores, at most 8)
     play_test: str = "full"  # new/edited audio files are play-tested: "full" (whole file), "quick" (3 spots), "off"
     auto_minutes: int = 0    # watch mode: scan + sort sure books every N minutes (0 = off)
+    # AI for the unsure books (core.ai): "off", "ollama" (on this PC) or "claude" (your Anthropic API key)
+    ai_mode: str = "off"
+    ai_url: str = "http://localhost:11434"   # Ollama
+    ai_model: str = "qwen2.5:14b"             # Ollama model
+    ai_claude_model: str = "claude-haiku-4-5-20251001"
+    ai_api_key: str = ""                      # Anthropic API key (Claude)
+    ai_auto_apply: bool = True                # a sure answer is used right away (else it waits for Accept)
+    ai_min_confidence: int = 85               # "sure" = at least this many % confident
     split_audio: bool = True        # AudioBooks Sorted\Light Novels, \Audiobooks
     audio_ln_dir: str = "Light Novels"
     audio_dir: str = "Audiobooks"

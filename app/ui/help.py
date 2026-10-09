@@ -85,6 +85,17 @@ before the original leaves Incoming - <i>Full</i> (the whole file, about 20 s pe
 middle, end). A new file that fails is removed and the original is sorted as it is; the result says why.</li>
 <li><b>Edit &gt; Mark selected as already sorted</b> (Ctrl+M): hide books your library already has.</li>
 </ul>
+<h3>Smarter sorting</h3>
+<ul>
+<li><b>Rules from your edits</b>: fix a book once (Save changes, or Tools &gt; Edit a sorted book) and the app
+remembers it - an author's spelling, a series name, light novel or audiobook, a series' narrator. The next sort
+does the same by itself. See and remove them in <b>Tools &gt; Rules</b>; undoing an Edit removes its rule.</li>
+<li><b>AI</b> (Settings &gt; AI, off at first): asks an AI about the books still marked Check - who wrote it, who
+reads it, series, title, kind. <i>Local</i> uses Ollama on this PC (free, nothing leaves it; install it from
+ollama.com and run <i>ollama pull qwen2.5:14b</i>); <i>Cloud</i> uses Claude with your own Anthropic API key
+(about $0.001 a book). It only sees text (the book's files' metadata and the shop matches), every name it gives
+must appear there, and a sure answer is used right away - the rest wait in the book's panel for <b>Accept</b>.</li>
+</ul>
 <h3>Portable</h3>
 <p>Put a folder named <b>BookSorter-data</b> next to BookSorter.exe and everything the app saves - settings, history (undo), cache, ffmpeg and the window layout - stays in there, not in your user profile or the registry. Copy the two together to a USB stick or another PC. Delete the folder to go back to normal mode.</p>
 <ul>

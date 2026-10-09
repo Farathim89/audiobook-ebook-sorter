@@ -75,12 +75,42 @@ def read_daisy_ncc(path: Path) -> Metadata:
     )
 
 
+_INFO_AUTHOR_RE = re.compile(r"(?im)^\s*(?:by|author|written by)\s*[:\t]\s*(.+?)\s*$")
+_INFO_LIGHT_NOVEL_RE = re.compile(r"(?im)\blight novels?\b|^\s*japanese title\b|\btapas media\b|\bwuxiaworld\b"
+                                  r"|\bwebnovel\b|\bweb novels?\b")  # publishers: core.publishers
+_INFO_NARRATOR_RE =re.compile(r"(?im)^\s*(?:narrated by|narrator|read by)\s*[:\t]\s*(.+?)\s*$")
+
+
+def read_book_info(folder: Path | None) -> tuple[list[str], list[str], bool]:
+    """'book info.txt' (a copy of the shop page some downloads come with): (authors, narrators,
+    says 'Light Novel')."""
+    path = folder / "book info.txt" if folder else None
+    if not path or not path.is_file():
+        return [], [], False
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], [], False
+    first = lambda rx: rx.search(text)  # noqa: E731 - the first 'By:' / 'Narrated by:' line
+    # 'By: Hayaken, Mike Langwiser - translator': the translator goes first (else 'Hayaken, Mike ...' reads
+    # as 'Last, First' -> 'Mike Langwiser - translator Hayaken')
+    credited = r"(?i)\s*(?:^|,)\s*[^,]*?\s[-–(]\s*(?:translator|translated by|illustrator|editor|foreword)\)?\s*(?=,|$)"
+    # a shop page lists whole names ('By: Chugong, Hye Young Im'), never 'Last, First'
+    whole = lambda s: [x for p in s.split(",") for x in split_people(p)]  # noqa: E731
+    authors = whole(re.sub(credited, "", m.group(1)).strip(" ,")) if (m := first(_INFO_AUTHOR_RE)) else []
+    authors = [a for a in authors if not re.search(r"(?i)[\s(\-–,]+(?:translator|translated by|illustrator|editor)\)?\s*$", a)]
+    narrators = whole(m.group(1)) if (m := first(_INFO_NARRATOR_RE)) else []
+    # 'Genre: Light Novels', a 'Japanese Title' line, or a web-novel platform ('©2021 Twoony and Tapas Media')
+    return authors, narrators, bool(_INFO_LIGHT_NOVEL_RE.search(text))
+
+
 @safe
 def read_abs_json(path: Path) -> Metadata:
     """Audiobookshelf's 'Store metadata with item' file."""
     data = json.loads(path.read_text(encoding="utf-8"))
     meta = Metadata(
         title=clean_title(data.get("title")),
+        subtitle=(data.get("subtitle") or "").strip() or None,
         authors=[a for name in data.get("authors") or [] for a in split_people(name)],
         narrators=[n for name in data.get("narrators") or [] for n in split_people(name)],
         year=parse_year(data.get("publishedYear")),
@@ -91,6 +121,10 @@ def read_abs_json(path: Path) -> Metadata:
         description=(data.get("description") or "").strip() or None,
     )
     series = (data.get("series") or [None])[0]
+    if series and (rng := re.search(r"\s*#\s*\d+(?:\.\d+)?\s*[-–—\ufffd]\s*\d+(?:\.\d+)?\s*$", series)):
+        series = None if not series[:rng.start()].strip() else series[:rng.start()].strip()
+        meta.series = series  # parts 1-7 in one book: the series, without a number
+        return meta
     if series:
         m = _SERIES_RE.match(series)
         meta.series = m.group("name") if m else series

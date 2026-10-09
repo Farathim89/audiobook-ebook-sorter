@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QSettings, QThreadPool, QTime, QTimer, Qt
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QListWidget, QListWidgetItem, QSizePolicy)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QHeaderView, QScrollArea, QStackedWidget,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QProgressBar,
@@ -48,6 +50,9 @@ from . import theme
 from .workers import Worker
 
 log = logging.getLogger(__name__)
+
+ACTIVITY_ROWS = 3  # books shown with their own bar while sorting
+STEP_SEP = "\x1f"  # 'book title' + STEP_SEP + 'what is happening' in a progress report
 
 STATE_FILTERS = [("All", "all"), ("Ready", "ready"), ("Check", "check"), ("Review", "review"),
                  ("Problems", "problem"), ("Unknown", "unknown"), ("Skipped", "skipped"), ("Sorted", "sorted")]
@@ -324,6 +329,53 @@ class MainWindow(QMainWindow):
         self._run(lambda w: plan_compare(f, [source], lambda i, n, t: w.report(i, n, t)), confirm,
                   "Comparing with your libraries…")
 
+    def _abs_client(self, what: str) -> AbsClient | None:
+        f = self.folders
+        if not f.abs_url or not f.abs_api_key:
+            QMessageBox.information(self, what, "Set the Audiobookshelf address and API key first:\n"
+                                    "Settings > Online. (In Audiobookshelf: Settings > API Keys.)")
+            return None
+        return AbsClient(f.abs_url, f.abs_api_key)
+
+    def backup_abs_progress(self) -> None:
+        from ..core.abs_progress import backup_progress  # noqa: PLC0415
+        if (client := self._abs_client("Back up progress")) is None:
+            return
+        self._run(lambda w: backup_progress(self.folders, client), lambda res: QMessageBox.information(
+            self, "Back up progress", f"{res[1]} progress entries saved to\n{res[0]}\n\nRestore them any time "
+            "with Tools > Restore listening progress."), "Saving your Audiobookshelf progress…")
+
+    def restore_abs_progress(self) -> None:
+        from ..core.abs_progress import apply_restore, backups_dir, plan_restore  # noqa: PLC0415
+        if (client := self._abs_client("Restore progress")) is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a progress backup", str(backups_dir(self.folders)),
+                                              "Progress backups (abs-progress-*.json)")
+        if not path:
+            return
+
+        def confirm(steps):
+            todo = [s for s in steps if s.action == "set"]
+            keep = [s for s in steps if s.action == "keep"]
+            skip = [s for s in steps if s.action == "skip"]
+            lines = [f"• {s.title} - {s.state} → {s.library} ({s.how})" for s in todo[:25]]
+            more = f"\n…and {len(todo) - 25} more" if len(todo) > 25 else ""
+            text = (f"{len(todo)} to restore, {len(keep)} already have newer progress (left alone), "
+                    f"{len(skip)} not found.\n\n" + "\n".join(lines) + more)
+            if skip:
+                text += "\n\nNot found: " + ", ".join(s.title for s in skip[:10])
+            if not todo:
+                QMessageBox.information(self, "Restore progress", text)
+                return
+            if QMessageBox.question(self, "Restore progress", text + "\n\nWrite this progress to Audiobookshelf? "
+                                    "Your progress as it is now is saved first.") != QMessageBox.Yes:
+                return
+            self._run(lambda w: apply_restore(self.folders, client, steps), lambda res: QMessageBox.information(
+                self, "Restore progress", f"{res[1]} books have their progress back.\n\nThe progress before "
+                f"this restore is saved in\n{res[0]}"), "Writing progress to Audiobookshelf…")
+
+        self._run(lambda w: plan_restore(client, Path(path)), confirm, "Finding the books in your libraries…")
+
     def sort_collections(self) -> None:
         f = self.folders
         if not f.abs_url or not f.abs_api_key:
@@ -446,6 +498,157 @@ class MainWindow(QMainWindow):
 
         self._run(find, confirm, "Checking MangaDex and the wikis…")
 
+    def manage_rules(self) -> None:
+        from ..core.rules import Rules  # noqa: PLC0415
+        rules = Rules.load(self.folders.state)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Rules from your edits ({len(rules.items)})")
+        dlg.resize(820, 460)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("The next sort uses these by itself (never over a field you set by hand). "
+                           "Undoing an Edit in History also removes the rule it made."))
+        lst = QListWidget()
+
+        def fill() -> None:
+            lst.clear()
+            for r in rules.items:
+                lst.addItem(f"{r.describe()}     (from '{r.book}', {r.made})")
+            if not rules.items:
+                lst.addItem("No rules yet - fix a book with Edit or Save changes and it shows up here.")
+        fill()
+        v.addWidget(lst, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        remove = buttons.addButton("Remove selected", QDialogButtonBox.ActionRole)
+
+        def drop() -> None:
+            row = lst.currentRow()
+            if 0 <= row < len(rules.items):
+                rules.remove(row)
+                fill()
+                dlg.setWindowTitle(f"Rules from your edits ({len(rules.items)})")
+        remove.clicked.connect(drop)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+        dlg.exec()
+
+    def manage_publishers(self) -> None:
+        from PySide6.QtWidgets import QComboBox, QHeaderView, QTableWidget, QTableWidgetItem  # noqa: PLC0415
+        from ..core.publishers import PUBLISHER_KINDS, Publisher, Publishers  # noqa: PLC0415
+        pubs = Publishers.load(self.folders.state)
+        labels = {"light novel": "Light novel (comics: manga)", "manga": "Manga (comics only)",
+                  "normal": "Normal (Audiobooks / EBooks / Comics)"}
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Publishers")
+        dlg.resize(760, 560)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("A book whose publisher contains a name below goes to that kind (the longest match "
+                           "counts). Your edit rules still win. Changes count from the next scan."))
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["Publisher (part of the name)", "Kind"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+
+        def add_row(name: str = "", kind: str = "light novel") -> None:
+            r = table.rowCount()
+            table.insertRow(r)
+            table.setItem(r, 0, QTableWidgetItem(name))
+            box = QComboBox()
+            for k in PUBLISHER_KINDS:
+                box.addItem(labels[k], k)
+            box.setCurrentIndex(max(0, box.findData(kind)))
+            table.setCellWidget(r, 1, box)
+        for p in sorted(pubs.items, key=lambda p: p.name.lower()):
+            add_row(p.name, p.kind)
+        v.addWidget(table, 1)
+        row = QHBoxLayout()
+        b_add = QPushButton("Add")
+        b_add.clicked.connect(lambda: (add_row(), table.scrollToBottom(), table.editItem(table.item(table.rowCount() - 1, 0))))
+        b_del = QPushButton("Remove selected")
+        b_del.clicked.connect(lambda: table.currentRow() >= 0 and table.removeRow(table.currentRow()))
+        row.addWidget(b_add)
+        row.addWidget(b_del)
+        row.addStretch()
+        v.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.rejected.connect(dlg.reject)
+
+        def save() -> None:
+            pubs.items = [Publisher(table.item(r, 0).text().strip(), table.cellWidget(r, 1).currentData())
+                          for r in range(table.rowCount()) if table.item(r, 0) and table.item(r, 0).text().strip()]
+            pubs.save()
+            dlg.accept()
+        buttons.accepted.connect(save)
+        v.addWidget(buttons)
+        dlg.exec()
+
+    def ask_ai(self, books: list, everyone: bool = False) -> None:
+        """Ask the AI about these books now: the unsure ones, or (one book's 'Ask AI') this one anyway."""
+        from ..core.ai import AiHelper, make_ai  # noqa: PLC0415
+        helper = make_ai(self.folders)
+        if helper is None:
+            QMessageBox.information(self, "AI", "The AI is off. Turn it on in Settings > AI (Local with Ollama, "
+                                    "or Cloud with your Anthropic API key).")
+            return
+        todo = list(books) if everyone else [b for b in books if AiHelper.wanted(b)]
+        if not todo:
+            QMessageBox.information(self, "AI", "No unsure books to ask about - scan Incoming first.")
+            return
+        if everyone:
+            helper.wanted = lambda b: True
+
+        def work(w: Worker):
+            used = helper.run(todo, cancelled=w.cancelled,
+                              on_progress=lambda i, n, b: w.report(i, n, b.meta.title or b.main_file.name))
+            return used, helper.failed
+
+        def finished(result):
+            used, failed = result
+            self._replan()
+            for b in todo:
+                self.model.refresh(b)
+            self._update_counts()
+            self._show_current()
+            if failed:
+                QMessageBox.warning(self, "AI", failed)
+            elif len(todo) > 1:
+                QMessageBox.information(self, "AI", f"Asked about {len(todo)} books: {used} answers used, "
+                                        f"{len(todo) - used} wait in the book's panel (or were not sure).")
+
+        self._run(work, finished, f"Asking the AI about {len(todo)} book(s)…")
+
+    def check_last_sort(self) -> None:
+        from ..core.runcheck import check_run, last_sort_run  # noqa: PLC0415
+        run_id = last_sort_run(self.folders.state)
+        if run_id is None:
+            QMessageBox.information(self, "Check last sort", "No sort with an info log yet - sort some books first.")
+            return
+        total, found = check_run(self.folders.state, run_id)
+        if not found:
+            QMessageBox.information(self, "Check last sort", f"All {total} books of the last sort (run {run_id}) look right.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Check last sort - {len(found)} of {total} books look off")
+        dlg.resize(900, 520)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(f"Run {run_id}. Double-click a book to open its folder; fix it with "
+                           "Tools > Edit a sorted book (Ctrl+E) - every change can be undone."))
+        lst = QListWidget()
+        lst.setWordWrap(True)
+        for f in found:
+            target = Path(f.target)
+            item = QListWidgetItem(f"{target.name}\n" + "\n".join(f"      • {p}" for p in f.problems))
+            item.setToolTip(str(target))
+            item.setData(Qt.UserRole, str(target))
+            lst.addItem(item)
+        lst.itemDoubleClicked.connect(lambda it: self._open(Path(it.data(Qt.UserRole))
+                                                            if Path(it.data(Qt.UserRole)).exists()
+                                                            else Path(it.data(Qt.UserRole)).parent))
+        v.addWidget(lst, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+        dlg.exec()
+
     def play_test_library(self) -> None:
         if not self._have_ffmpeg():
             return
@@ -491,6 +694,62 @@ class MainWindow(QMainWindow):
                 os.startfile(str(report))
 
         self._run(work, finished, f"Play-testing {len(files)} files ({'full' if full else 'quick'})…")
+
+    def repair_audio(self) -> None:
+        if not self._have_ffmpeg():
+            return
+        from ..core import m4b  # noqa: PLC0415
+        from ..core.library import LibraryEditor, audio_files_under  # noqa: PLC0415
+        folder = QFileDialog.getExistingDirectory(self, "Repair damaged audio - pick a book (or a whole series / author)",
+                                                  str(self.folders.audio_sorted))
+        if not folder:
+            return
+        files = audio_files_under([Path(folder)])
+        if not files:
+            QMessageBox.information(self, "Repair", "No audio files in that folder.")
+            return
+        folders = self.folders
+
+        def find(w: Worker):
+            out = []
+            for i, f in enumerate(files, 1):
+                w.report(i, len(files), f"{f.name}{STEP_SEP}counting damaged audio packets")
+                if w.cancelled():
+                    break
+                if n := m4b.damaged_packets(f, w.cancelled):
+                    out.append((f, n))
+            return out
+
+        def confirm(found):
+            if not found:
+                QMessageBox.information(self, "Repair", f"All {len(files)} files are fine - nothing to repair.")
+                return
+            lines = "\n".join(f"• {f.name}: {n} damaged packets" for f, n in found[:20])
+            if QMessageBox.question(self, "Repair", f"{len(found)} file(s) have damaged audio:\n\n{lines}\n\n"
+                                    "Re-encode them to clean AAC (same bitrate, chapters, tags and cover)? Takes a "
+                                    "few minutes per book. The originals are kept - undo from History.") != QMessageBox.Yes:
+                return
+
+            def work(w: Worker):
+                done, failed = 0, []
+                with LibraryEditor(folders, "repair") as ed:
+                    for i, (f, _) in enumerate(found, 1):
+                        w.report(i, len(found), f"{f.name}{STEP_SEP}re-encoding to clean AAC")
+                        try:
+                            ed.repair_audio(f, w.cancelled)
+                            done += 1
+                        except OSError as e:
+                            failed.append(f"{f.name}: {e}")
+                return done, failed
+
+            def finished(result):
+                done, failed = result
+                QMessageBox.information(self, "Repair", f"{done} repaired." + (
+                    "\n\nNot repaired:\n" + "\n".join(failed[:10]) if failed else ""))
+
+            self._run(work, finished, f"Repairing {len(found)} file(s)…")
+
+        self._run(find, confirm, f"Checking {len(files)} file(s) for damaged audio…")
 
     def fix_xhe(self) -> None:
         if not self._have_ffmpeg():
@@ -615,6 +874,7 @@ class MainWindow(QMainWindow):
 
         self.panel = DetailPanel(self._search_online)
         self.panel.edited.connect(self._book_edited)
+        self.panel.ask_ai.connect(lambda book: self.ask_ai([book], everyone=True))
         self.panel.resolve_duplicates.connect(self.resolve_duplicates)
 
         split = self.split = QSplitter()
@@ -669,12 +929,18 @@ class MainWindow(QMainWindow):
             ("Sorted library", [
                 ("Edit a sorted book", "Fix the author, title, series, number or narrator of a book that is "
                  "already sorted - the folder moves to match.", "Edit…", self.edit_sorted),
+                ("Check last sort", "Read the last sort's info log and list the books that look off: "
+                 "swapped author/narrator, a series split over two folders, odd titles, play-test notes.",
+                 "Check…", self.check_last_sort),
                 ("Improve covers", "Find bigger covers for sorted books with none or a low-res one.",
                  "Check covers…", self.improve_covers),
                 ("Update sorted manga", "Official English volume covers and volume titles (MangaDex, Fandom).",
                  "Update…", self.refresh_manga),
                 ("Play-test sorted audiobooks", "Play every sorted audiobook file through ffmpeg and list the "
                  "ones that are broken or cut off. Only reads - nothing is changed.", "Test…", self.play_test_library),
+                ("Repair damaged audio", "A bad download with damaged audio packets (clicks or skips): "
+                 "re-encode it to clean AAC so every player handles it. The few missing milliseconds stay "
+                 "missing; the original is kept (undo from History).", "Repair…", self.repair_audio),
                 ("Convert a sorted audiobook to M4B", "One chaptered .m4b from a sorted multi-file audiobook.",
                  "Convert…", self.m4b_in_library),
                 ("Split the Books library", "Sort a Books folder into Manga / Light Novels / EBooks / Comics.",
@@ -687,6 +953,22 @@ class MainWindow(QMainWindow):
                  "Find files…", self.fix_xhe),
                 ("Sort collections", "Put your Audiobookshelf collections in reading order (needs the API key "
                  "in Settings).", "Sort…", self.sort_collections),
+                ("Back up listening progress", "Save your Audiobookshelf progress (finished books, positions, "
+                 "bookmarks) - do it before you move books between libraries.", "Back up…", self.backup_abs_progress),
+                ("Restore listening progress", "Put progress from a backup back - also when the books are in "
+                 "other libraries now (found by ASIN or title + author). Shows what it will do first.",
+                 "Restore…", self.restore_abs_progress),
+            ]),
+            ("Smart sorting", [
+                ("Rules from your edits", "Every fix you make with Edit or Save changes is remembered: the "
+                 "next sort does the same by itself (author spelling, series name, kind, a series' narrator).",
+                 "Rules…", self.manage_rules),
+                ("Publishers", "Which publishers make light novels or manga ('Yen Audio' -> Light Novels). The "
+                 "sort reads the publisher from the book's files, its book info and the shop match.",
+                 "Publishers…", self.manage_publishers),
+                ("Ask AI about unsure books", "Let the AI (Settings > AI) look at the scanned books marked "
+                 "Check - who wrote it, who reads it, series, title, kind. Sure answers are used, the rest "
+                 "wait in the book's panel.", "Ask AI…", lambda: self.ask_ai(self.model.books)),
             ]),
             ("Maintenance", [
                 ("Download ffmpeg", "Needed for MP3 → M4B and the xHE-AAC fix.", "Download…",
@@ -725,9 +1007,33 @@ class MainWindow(QMainWindow):
     def _build_statusbar(self) -> None:
         sb = self.statusBar()
         self.counts = QLabel()
+        # never wider than the room left: a long title must not push the bars out of the status bar
+        self.counts.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.counts.setMinimumWidth(60)
         sb.addWidget(self.counts, 1)
+        # while sorting: one row per book that is running right now (its own bar and step)
+        self.activity = QWidget()
+        rows = QVBoxLayout(self.activity)
+        rows.setContentsMargins(0, 2, 8, 2)
+        rows.setSpacing(2)
+        self._activity_rows = []
+        for _ in range(ACTIVITY_ROWS):
+            row = QHBoxLayout()
+            bar = QProgressBar()
+            bar.setTextVisible(False)
+            bar.setFixedSize(110, 8)
+            label = QLabel()
+            label.setFixedWidth(430)
+            row.addWidget(bar)
+            row.addWidget(label)
+            rows.addLayout(row)
+            self._activity_rows.append((bar, label))
+        self.activity.setVisible(False)
+        sb.addPermanentWidget(self.activity)
+        self._active: dict[str, str] = {}  # book title -> what it is doing (books running at once)
         # the text sits next to the bar (on the bar it is unreadable on half of it in some themes)
         self.progress_text = QLabel()
+        self.progress_text.setStyleSheet("font-weight: bold; padding-left: 12px;")  # what is happening now
         sb.addPermanentWidget(self.progress_text)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
@@ -771,10 +1077,54 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, i: int, n: int, text: str) -> None:
         self.progress.setMaximum(max(n, 1))
+        if STEP_SEP in text:
+            # sorting: one row per running book (right), how many are done (left + the main bar)
+            title, step = text.split(STEP_SEP, 1)
+            self._active.pop(title, None)
+            self._active[title] = step  # newest last
+            self._show_activity()
+            self._sort_count(i - 1, n)
+            return
         self.progress.setValue(i)
+        if self._active is not None and self.activity.isVisible():
+            self._active.pop(text, None)  # this book is done
+            self._show_activity()
+            self._sort_count(i, n)
+            return
         line = f"{i}/{n}  {text}"
         self.progress_text.setText(line if len(line) <= 90 else line[:89] + "…")
         self.progress_text.setToolTip(line)
+
+    def _sort_count(self, done: int, n: int) -> None:
+        self.progress.setValue(max(0, done))
+        line = f"{self._busy_label}  ·  {max(0, done)} of {n} done"
+        self.counts.setText(self.counts.fontMetrics().elidedText(line, Qt.ElideRight, max(60, self.counts.width() - 8)))
+        self.counts.setToolTip(line)
+
+    def _show_activity(self) -> None:
+        """Up to ACTIVITY_ROWS books with their own bar: a % in the step fills it, else it just moves."""
+        running = list(self._active.items())[-ACTIVITY_ROWS:]
+        self.activity.setVisible(bool(running))
+        self.progress_text.setVisible(not running and self.progress.isVisible())
+        for k, (bar, label) in enumerate(self._activity_rows):
+            if k >= len(running):
+                bar.setVisible(False)
+                label.setVisible(False)
+                continue
+            title, step = running[k]
+            pct = re.search(r"(\d{1,3})%\s*$", step)
+            if pct:
+                bar.setRange(0, 100)
+                bar.setValue(int(pct.group(1)))
+            else:
+                bar.setRange(0, 0)  # moving: no % for this step
+            fm = label.fontMetrics()
+            short = fm.elidedText(title, Qt.ElideRight, 170)  # the title short, the step readable
+            text = fm.elidedText(f"▶ {short} – {step}", Qt.ElideRight, label.width() - 4)
+            label.setText(text)
+            label.setToolTip(f"{title}\n{step}")
+            bar.setVisible(True)
+            label.setVisible(True)
 
     def _on_failed(self, err: str) -> None:
         self._set_busy(False)
@@ -794,11 +1144,15 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(busy)
         self.progress_text.setVisible(busy)
         self.b_cancel.setVisible(busy)
+        self._active = {}
+        self.activity.setVisible(False)
         if busy:
             self.progress.setRange(0, 0)
             self.progress_text.setText("")
             self.counts.setText(label)
+            self._busy_label = label.rstrip("…")
         else:
+            self.counts.setToolTip("")
             self._update_counts()
             self._update_done_size()
 
@@ -1025,6 +1379,15 @@ class MainWindow(QMainWindow):
         return self.lookup.search(book, query)
 
     def _book_edited(self, book: Book) -> None:
+        if getattr(self.panel, "before_edit", None):
+            from ..core.rules import Rules  # noqa: PLC0415
+            try:
+                learned = Rules.load(self.folders.state).learn(*self.panel.before_edit, book)
+            except (OSError, ValueError):
+                learned = []
+            self.panel.before_edit = None
+            if learned:
+                self.statusBar().showMessage("Learned: " + "; ".join(r.describe() for r in learned), 8000)
         self._replan()
         if self.model.state(book) in ("ready", "review"):
             self.model.set_checked([book], True)
@@ -1139,8 +1502,36 @@ class MainWindow(QMainWindow):
                 w.report(i, n, b.meta.title or "")
 
             executor = Executor(self.folders, mode, self.processed, to_m4b=to_m4b, redo_m4b=redo_m4b,
-                                on_detail=lambda s: w.report(pos[0] + 1, pos[1], s))
-            return executor.run(plan, chosen, on_progress=progress, cancelled=w.cancelled)
+                                on_step=lambda title, step: w.report(pos[0] + 1, pos[1], f"{title}{STEP_SEP}{step}"))
+            result = executor.run(plan, chosen, on_progress=progress, cancelled=w.cancelled)
+            # new downloads of books the library has: a damaged sorted copy makes room for a clean new one
+            from ..core.library import replace_damaged_copies  # noqa: PLC0415
+            again = [b for b in self.model.books if b not in chosen and b not in self.model.done
+                     and any(p.startswith("already in the library") for p in plan.problems.get(b, []))]
+            if again and not w.cancelled():
+                replaced = replace_damaged_copies(self.folders, plan, again, w.cancelled,
+                                                  on_step=lambda t, s: w.report(0, 0, f"{t}{STEP_SEP}{s}"))
+                if replaced:
+                    plan2 = Planner(self.folders).plan(replaced)
+                    ok = [b for b in replaced if not plan2.problems.get(b)]
+                    more = executor.run(plan2, ok, on_progress=progress, cancelled=w.cancelled)
+                    result.results += more.results
+            if self.folders.auto_move_duplicates and not w.cancelled():
+                # extra copies and books the library already has: out of Incoming (undoable)
+                from ..core.library import move_duplicates  # noqa: PLC0415
+                w.report(0, 0, f"Duplicates{STEP_SEP}looking for copies the library already has")
+                moves, _ = find_duplicates(self.folders, self.lookup, cancelled=w.cancelled)
+                if moves and not w.cancelled():
+                    result.duplicates = move_duplicates(
+                        self.folders, moves, w.cancelled,
+                        on_progress=lambda i, n, t: w.report(i, n, f"{t}{STEP_SEP}moving the copy to Duplicates"))
+            if mode == "move" and not w.cancelled():
+                # folders left with only an old cover.jpg / metadata.json: to the Done folder too
+                from ..core.library import find_sorted_originals, move_sorted_originals  # noqa: PLC0415
+                _, orphans = find_sorted_originals(self.folders)
+                if orphans:
+                    move_sorted_originals(self.folders, [], orphans, w.cancelled)
+            return result
 
         def finished(result):
             self.model.done |= {r.book for r in result.results if r.status in ("done", "review")}
@@ -1151,7 +1542,20 @@ class MainWindow(QMainWindow):
                    f"{result.count('skipped')} skipped, {result.count('failed')} failed.\n\nRun id: {result.run_id}")
             if failed:
                 msg += "\n\n" + "\n".join(f"• {r.book.meta.title}: {r.detail}" for r in failed[:15])
+            try:
+                from ..core.runcheck import check_run  # noqa: PLC0415
+                _, odd = check_run(self.folders.state, result.run_id)
+            except Exception:  # noqa: BLE001 - the check is a help, never a reason to fail
+                odd = []
+            if odd:
+                msg += f"\n\n{len(odd)} book(s) look off - see Tools > Check last sort."
+            if result.duplicates and result.duplicates[1]:
+                run_id, n = result.duplicates
+                msg += (f"\n\n{n} duplicate(s) moved out of Incoming to {self.folders.duplicates} "
+                        f"(undo from History: run {run_id}).")
             QMessageBox.information(self, "Sort finished", msg)
+            if result.duplicates and result.duplicates[1]:
+                self.scan()  # the moved copies are gone from Incoming
 
         self._run(work, finished, f"Sorting {len(chosen)} books ({'move' if mode == 'move' else 'copy'}"
                   + (", MP3 → M4B" if to_m4b else "")

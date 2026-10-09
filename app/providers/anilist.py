@@ -59,9 +59,15 @@ class AniList:
                 return self._candidate(media, author, series, exact=True)
             main_matches.append((media, author))
         if authors:  # only the main title matches: the author must be the same
-            for media, author in main_matches:
-                if _same_person(author, authors):
-                    return self._candidate(media, author, series)
+            ours = [(media, author) for media, author in main_matches if _same_person(author, authors)]
+            if len(ours) == 1:
+                return self._candidate(*ours[0], series)
+            if ours:
+                # 'Bungo Stray Dogs' fits 'Bungo Stray Dogs: BEAST' and other novels by the same author:
+                # it IS one of their novels, but which one is unknown - keep our own name, cover, text
+                cand = self._candidate(*ours[0], series, exact=True)
+                cand.meta.series, cand.meta.cover_url, cand.meta.description = series, None, None
+                return cand
             return None
         if len(main_matches) == 1:  # no author to compare: only when AniList has just this one
             return self._candidate(*main_matches[0], series)

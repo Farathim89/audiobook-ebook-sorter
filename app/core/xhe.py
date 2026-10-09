@@ -13,7 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# no console window, and below-normal priority: sorting uses the PC's spare power, the PC stays smooth
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 PS_SCRIPT = r"""
 param([string]$Src, [string]$Dst, [int]$Bitrate, [int]$Rate)

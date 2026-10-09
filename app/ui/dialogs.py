@@ -242,6 +242,15 @@ class SettingsDialog(QDialog):
                                   "Quick: 20 s at the start, middle and end. Full: the whole file (~20 s per book).\n"
                                   "A new file that fails is removed and the original is sorted as it is.")
         form.addRow("Play test", self.play_test)
+        from ..core.executor import auto_workers  # noqa: PLC0415
+        self.workers = QSpinBox()
+        self.workers.setRange(0, 8)
+        self.workers.setSpecialValueText(f"auto ({auto_workers()})")
+        self.workers.setValue(folders.workers)
+        self.workers.setToolTip("How many books are sorted at the same time. Encoding (MP3 → M4B, re-encode) and\n"
+                                "play tests use one CPU core each - more books at once = faster on a big PC.\n"
+                                "Auto: 3 at most (they share one disk). Use 1 for a slow USB disk.")
+        form.addRow("Books at once", self.workers)
         self.move_originals = QCheckBox("Move originals out of Incoming")
         self.move_originals.setChecked(folders.move_originals)
         self.move_originals.setToolTip("Else copy and keep them. Leftover cover/metadata files go to the Done "
@@ -281,8 +290,9 @@ class SettingsDialog(QDialog):
         self.auto.setToolTip("While the window is open: scan Incoming and sort every book that is Ready "
                              "(sure match, no problems) into the sorted folders. Everything else waits for you.")
         form.addRow("Auto-sort every", self.auto)
-        self.auto_dupes = QCheckBox("Auto-sort also moves duplicates")
-        self.auto_dupes.setToolTip("Extra copies and books your library already has go to the Duplicates folder")
+        self.auto_dupes = QCheckBox("Move duplicates out of Incoming after sorting")
+        self.auto_dupes.setToolTip("After every sort (and auto-sort): extra copies and books your library already has\n"
+                                   "go to the Duplicates folder - the best copy stays. Undoable; nothing is deleted.")
         self.auto_dupes.setChecked(folders.auto_move_duplicates)
         form.addRow("", self.auto_dupes)
         tabs.addTab(two_columns(form, [0, 1, 2, 3], ("Folders && files", "Originals && auto-sort")), "Sorting")
@@ -336,6 +346,7 @@ class SettingsDialog(QDialog):
         self.abs_key.setToolTip("Only for Tools > Sort collections")
         form.addRow("ABS API key", self.abs_key)
         tabs.addTab(two_columns(form, [0, 1, 2, 3, 4, 5, 6], ("Sources", "Manga && Audiobookshelf")), "Online")
+        tabs.addTab(self._ai_tab(folders), "AI")
 
         box = QWidget()
         form = QFormLayout(box)
@@ -350,6 +361,94 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _ai_tab(self, folders: Folders) -> QWidget:
+        from ..core.ai import usage  # noqa: PLC0415
+        from .sidebar import SegmentedSwitch  # noqa: PLC0415
+        box = QWidget()
+        form = QFormLayout(box)
+        intro = QLabel("The AI only looks at the books the rules can't decide (marked Check, or a shop that "
+                       "disagrees) - usually a few per sort. It reads what the book's files and the shops say "
+                       "(text only, never the audio) and decides author, narrator, series, title and kind. "
+                       "Every name it gives must appear in that text. Fixes you make with Edit are learned as "
+                       "rules either way (Tools > Rules).")
+        intro.setWordWrap(True)
+        intro.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        form.addRow(intro)
+        self.ai_mode = SegmentedSwitch(["Off", "Local (Ollama)", "Cloud (Claude)"])
+        self.ai_mode.setCurrentIndex({"ollama": 1, "claude": 2}.get(folders.ai_mode, 0))
+        form.addRow("AI", self.ai_mode)
+        self.ai_url = QLineEdit(folders.ai_url)
+        self.ai_url.setToolTip("Where Ollama answers (ollama.com - install it, then: ollama pull qwen2.5:14b)")
+        form.addRow("Ollama address", self.ai_url)
+        self.ai_model = QLineEdit(folders.ai_model)
+        self.ai_model.setToolTip("qwen2.5:14b (9 GB) fits a 16 GB graphics card; qwen2.5:7b (5 GB) for smaller ones")
+        form.addRow("Ollama model", self.ai_model)
+        self.ai_key = QLineEdit(folders.ai_api_key)
+        self.ai_key.setEchoMode(QLineEdit.PasswordEchoOnEdit)
+        self.ai_key.setPlaceholderText("console.anthropic.com > API Keys")
+        self.ai_key.setToolTip("Your own Anthropic API key - paid per use (about $0.001 per book with Haiku)")
+        form.addRow("Claude API key", self.ai_key)
+        self.ai_claude_model = QLineEdit(folders.ai_claude_model)
+        form.addRow("Claude model", self.ai_claude_model)
+        self.ai_auto = QCheckBox("Use sure answers right away (else they wait for Accept in the book's panel)")
+        self.ai_auto.setChecked(folders.ai_auto_apply)
+        form.addRow("", self.ai_auto)
+        self.ai_conf = QSpinBox()
+        self.ai_conf.setRange(50, 100)
+        self.ai_conf.setSuffix(" %")
+        self.ai_conf.setValue(folders.ai_min_confidence)
+        self.ai_conf.setToolTip("An answer counts as sure from this confidence on")
+        form.addRow("Sure from", self.ai_conf)
+        row = QHBoxLayout()
+        test = QPushButton("Test")
+        test.clicked.connect(self._test_ai)
+        row.addWidget(test)
+        used = usage(folders.state)
+        self.ai_used = QLabel(f"{used.get('calls', 0)} questions asked so far"
+                              + (f" - Claude cost ${used['cost_usd']:.3f}" if used.get("cost_usd") else ""))
+        self.ai_used.setObjectName("muted")
+        row.addWidget(self.ai_used, 1)
+        form.addRow("", row)
+
+        def show_fields(i: int) -> None:
+            for w, on in ((self.ai_url, i == 1), (self.ai_model, i == 1), (self.ai_key, i == 2),
+                          (self.ai_claude_model, i == 2), (self.ai_auto, i > 0), (self.ai_conf, i > 0)):
+                w.setVisible(on)
+                if (label := form.labelForField(w)) is not None:
+                    label.setVisible(on)
+        self.ai_mode.currentIndexChanged.connect(show_fields)
+        show_fields(self.ai_mode.currentIndex())
+        return box
+
+    def _ai_settings(self, folders: Folders) -> None:
+        folders.ai_mode = ("off", "ollama", "claude")[self.ai_mode.currentIndex()]
+        folders.ai_url = self.ai_url.text().strip().rstrip("/") or "http://localhost:11434"
+        folders.ai_model = self.ai_model.text().strip() or "qwen2.5:14b"
+        folders.ai_api_key = self.ai_key.text().strip()
+        folders.ai_claude_model = self.ai_claude_model.text().strip() or "claude-haiku-4-5-20251001"
+        folders.ai_auto_apply = self.ai_auto.isChecked()
+        folders.ai_min_confidence = self.ai_conf.value()
+
+    def _test_ai(self) -> None:
+        import copy  # noqa: PLC0415
+        from ..core.ai import make_ai  # noqa: PLC0415
+        trial = copy.copy(self.folders)
+        self._ai_settings(trial)
+        helper = make_ai(trial)
+        if helper is None:
+            QMessageBox.information(self, "AI", "Choose Local or Cloud first (Cloud needs your API key).")
+            return
+        from PySide6.QtWidgets import QApplication  # noqa: PLC0415
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            text = helper.client.test()
+        except OSError as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "AI", str(e))
+            return
+        QApplication.restoreOverrideCursor()
+        QMessageBox.information(self, "AI", text)
 
     # -- helpers --------------------------------------------------------------
     def _path_row(self, name: str, value, placeholder: str = "") -> QWidget:
@@ -453,11 +552,13 @@ class SettingsDialog(QDialog):
         self.folders.fix_xhe_aac = self.fix_xhe.isChecked()
         self.folders.m4b_codec = "aac" if self.m4b_codec.currentIndex() == 1 else "copy"
         self.folders.play_test = ("off", "quick", "full")[self.play_test.currentIndex()]
+        self.folders.workers = self.workers.value()
         self.folders.auto_minutes = self.auto.value()
         self.folders.auto_move_duplicates = self.auto_dupes.isChecked()
         self.folders.move_originals = self.move_originals.isChecked()
         self.folders.done_days = self.done_days.value()
         self.folders.keep_done = self.keep_done.isChecked()
+        self._ai_settings(self.folders)
         if self.create.isChecked():
             for name in ("audio_incoming", "books_incoming", "audio_sorted", "books_sorted", "review", "duplicates",
                          "done", "state"):
