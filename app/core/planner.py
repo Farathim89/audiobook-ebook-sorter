@@ -17,7 +17,7 @@ from ..providers.match import norm_language
 from ..readers.names import parse_volume
 from .metadata import format_index, series_number
 from .text import fold
-from .models import Book, BookType
+from .models import BOOK_EXTS, Book, BookType
 
 MAX_PATH = 259
 _INVALID_RE = re.compile(r'[<>"/\\|?*\x00-\x1f]')
@@ -234,13 +234,35 @@ class Planner:
         m = book.meta
         d = self.library_root(book) / clean_name(book.author or "Unknown Author")
         if m.series:
-            d /= self.series_folder(book, series_limit or limit)
+            d /= self._library_series_folder(book) or self.series_folder(book, series_limit or limit)
         name = self.book_name(book)
         cut = clean_name(name, limit)
         if cut != clean_name(name, 10_000) and (tail := re.search(r"(?i),?\s*vol(?:ume)?\.?\s*[\d.]+$", name)):
             # '10 - My Daughter Left the Nest and Returned an S-Rank' lost its volume: cut the middle instead
             cut = clean_name(name[:tail.start()], max(10, limit - len(tail.group(0)))).rstrip(" .,-") + tail.group(0)
         return d / cut
+
+    def _library_series_folder(self, book: Book) -> str | None:
+        """The folder your library already keeps this series in ('Classroom of the Elite - Year 2', while the
+        series is called 'Classroom of the Elite (Year 2)'): new volumes join it instead of starting a second."""
+        if self._abs is None:
+            from .abs_index import AbsIndex  # noqa: PLC0415
+            self._abs = AbsIndex.load(self.folders)
+        if not self._abs.books or not book.author:
+            return None
+        from .abs_index import _comic, _skey, _swedish  # noqa: PLC0415
+        fmt = "audio" if book.type is BookType.AUDIO else "ebook"
+        key, me = _skey(book.meta.series or ""), fold(book.author)
+        from collections import Counter  # noqa: PLC0415
+        names = Counter()
+        for a in self._abs._live(fmt, _comic(book), _swedish(book)):  # noqa: SLF001
+            if me in {fold(x) for x in a.authors} and any(_skey(n) == key for n, _ in a.series):
+                p = Path(a.path)
+                folder = p.parent if p.suffix.lower() in BOOK_EXTS else p  # an item can be a single file
+                # ('..., Vol. 11' is a folder - its '. 11' is no file extension)
+                if fold(folder.parent.parent.name) == me:  # Author\Series\Book: the middle one is the series folder
+                    names[folder.parent.name] += 1
+        return names.most_common(1)[0][0] if names else None
 
     def library_root(self, book: Book) -> Path:
         if book.type is not BookType.AUDIO:

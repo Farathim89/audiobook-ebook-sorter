@@ -197,3 +197,17 @@ def test_a_new_year_is_written_like_the_library():
               authors=("Syougo Kinugasa",), btype=BookType.EBOOK)
     look._series_as_in_abs([b])
     assert b.meta.series == "Classroom of the Elite (Year 3)"
+
+
+def test_new_volumes_join_the_librarys_series_folder(tmp_path):
+    from app.config import Folders
+    from app.core.planner import Planner
+    p = Planner(Folders(state=tmp_path, audio_sorted=tmp_path / "a", books_sorted=tmp_path / "b"))
+    p._abs = AbsIndex([AbsBook("y", "Audiobooks - Light Novels",
+                               "H:/A/Syougo Kinugasa/Classroom of the Elite - Year 2/11 - Classroom of the Elite - Year 2, Vol. 11",
+                               "Y2 11", ["Syougo Kinugasa"], [], [("Classroom of the Elite (Year 2)", 11)], "", "audio", False)])
+    b = _book("Classroom of the Elite (Year 2), Vol. 12", "Classroom of the Elite (Year 2)", 12, authors=("Syougo Kinugasa",))
+    assert p.book_dir(b).parent.name == "Classroom of the Elite - Year 2"
+    e = _book("Classroom of the Elite (Year 2), Vol. 12", "Classroom of the Elite (Year 2)", 12,
+              authors=("Syougo Kinugasa",), btype=BookType.EBOOK)
+    assert p.book_dir(e).parent.name == "Classroom of the Elite (Year 2)"  # no ebook of it in the library: its own name
