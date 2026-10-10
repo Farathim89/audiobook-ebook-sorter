@@ -13,8 +13,9 @@ from ..core.text import natural_key
 from .theme import state_color, state_icon
 
 SORT_ROLE = Qt.UserRole + 1
-COLUMNS = ["", "Status", "Type", "Author", "Series", "#", "Title", "Narrator", "Year", "Goes to"]
-COL_CHECK, COL_STATUS, COL_TYPE, COL_AUTHOR, COL_SERIES, COL_INDEX, COL_TITLE, COL_NARR, COL_YEAR, COL_TARGET = range(10)
+COLUMNS = ["", "Status", "Type", "Author", "Series", "#", "Title", "Narrator", "Year", "Goes to", "Your library"]
+COL_CHECK, COL_STATUS, COL_TYPE, COL_AUTHOR, COL_SERIES, COL_INDEX, COL_TITLE, COL_NARR, COL_YEAR, COL_TARGET, \
+    COL_LIBRARY = range(11)
 TYPE_LABELS = {BookType.AUDIO: "🎧 Audio", BookType.EBOOK: "📖 Ebook", BookType.COMIC: "💬 Comic"}
 
 
@@ -165,7 +166,24 @@ class BookModel(QAbstractTableModel):
             return str(m.year or "")
         if col == COL_TARGET:
             return self._target_text(book)
+        if col == COL_LIBRARY:
+            return self._library_text(book)
         return ""
+
+    def _library_text(self, book: Book) -> str:
+        """'fills gap #5' / 'next volume' / 'have it'... - what your Audiobookshelf says about this book."""
+        index = getattr(self.plan, "abs_index", None) if self.plan else None
+        if index is None:
+            return ""
+        key = id(book)
+        cache = self.__dict__.setdefault("_library_cache", {})
+        if cache.get("index") is not index:
+            cache.clear()
+            cache["index"] = index
+        if key not in cache:
+            from ..core.abs_index import library_status  # noqa: PLC0415
+            cache[key] = library_status(book, index)
+        return cache[key]
 
     def _target_text(self, book: Book) -> str:
         if not self.plan or book not in self.plan.targets:

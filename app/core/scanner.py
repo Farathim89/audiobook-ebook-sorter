@@ -15,7 +15,8 @@ IGNORED_FILES = {"thumbs.db", "desktop.ini", ".ds_store"}
 def walk_files(root: Path) -> Iterator[Path]:
     """Every regular file under `root`, skipping hidden and system folders."""
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d.lower() not in IGNORED_DIRS]
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d.lower() not in IGNORED_DIRS
+                       and not d.endswith(".unpacking")]  # a zip being unpacked (core.archives)
         for name in filenames:
             if name.startswith("._") or name.lower() in IGNORED_FILES:
                 continue

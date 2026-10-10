@@ -84,7 +84,14 @@ def library_folder(book: Book, plan) -> Path | None:
         m = book.meta
         if m.series and m.series_index is not None and target.parent.is_dir():
             prefix = f"{format_index(m.series_index)} - "
-            return next((d for d in sorted(target.parent.iterdir()) if d.is_dir() and d.name.startswith(prefix)), None)
+            hit = next((d for d in sorted(target.parent.iterdir()) if d.is_dir() and d.name.startswith(prefix)), None)
+            if hit is not None:
+                return hit
+        index = getattr(plan, "abs_index", None)
+        if index is not None and (same := index.find_same(book)) is not None:
+            folder = Path(same.path)  # your Audiobookshelf's copy, whatever its folder is called (only read)
+            folder = folder if folder.is_dir() else folder.parent
+            return folder if folder.is_dir() else None
     except OSError:
         return None
     return None

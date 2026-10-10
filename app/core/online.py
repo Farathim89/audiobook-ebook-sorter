@@ -179,6 +179,8 @@ class OnlineLookup:
         self.fandom_auto = folders.fandom_auto
         from .rules import Rules  # noqa: PLC0415
         self.rules = Rules.load(folders.state)  # learned from your edits
+        self.folders = folders
+        self.abs_index = None  # what your Audiobookshelf has (read at the start of run)
         from .publishers import Publishers  # noqa: PLC0415
         self.publishers = Publishers.load(folders.state)
         from .ai import make_ai  # noqa: PLC0415
@@ -197,6 +199,8 @@ class OnlineLookup:
     def run(self, books: list[Book], on_progress: Callable[[int, int, Book], None] | None = None,
             cancelled: Callable[[], bool] = lambda: False) -> None:
         todo = [b for b in books if self.wants_lookup(b)]
+        from .abs_index import AbsIndex  # noqa: PLC0415
+        self.abs_index = AbsIndex.load(self.folders, fresh=True)
         own_series = {id(b): b.meta.series for b in books}  # what the books' own files say, before the shops
         for b in books:
             if b not in todo:
@@ -234,6 +238,8 @@ class OnlineLookup:
         _spin_offs_of_light_novels(books)
         _comics_like_their_folder(books)  # last: after the shared-series vote
         self.rules.apply(books)  # your own fixes win over the shops
+        self._series_as_in_abs(books)
+        self._numbers_from_series_lists(books)
         if self.ai is not None and not cancelled():
             self.ai.run(books, cancelled=cancelled)  # only the books still unsure
             self.rules.apply(books)  # and your fixes still win over the AI's spelling
@@ -351,14 +357,94 @@ class OnlineLookup:
 
     NARRATOR_REGIONS = ("uk", "ca", "au")  # Audible stores that often list a narrator the US one lacks
 
+    def _series_as_in_abs(self, books: list[Book]) -> None:
+        """A series you already have keeps the exact name ABS uses ('...in a Dungeon?' - a folder name
+        can't hold the '?'), so a new volume joins it instead of starting a second series."""
+        if not self.abs_index or not self.abs_index.books:
+            return
+        for b in books:
+            if b.meta.series and b.sources.get("series") != "manual" and b.type is not BookType.COMIC:
+                name = self.abs_index.series_name(b.author, b.meta.series,
+                                                  swedish=norm_language(b.meta.language) == "swedish")
+                if name and name != b.meta.series:
+                    b.notes.append(f"series spelled as in your library: {name}")
+                    b.meta.series = name
+
+    def _numbers_from_series_lists(self, books: list[Book]) -> None:
+        """A book with no number - or no series at all - that no shop match numbered ('I am Blue, in Pain, and
+        Fragile': not out as an audiobook, so Audible's search hides it): look it up in the series' own list
+        on Audible. Its own series, else every series its author has in this batch or your library. Any book
+        of a series with an ASIN leads to that list."""
+        from ..core.abs_index import _skey  # noqa: PLC0415
+        # series key -> (spelling, ASINs, folded authors)
+        known: dict[str, tuple[str, list[str], set[str]]] = {}
+
+        def add(name: str, asin: str | None, authors) -> None:
+            k = _skey(name)
+            if not k:
+                return
+            spelling, asins, who = known.setdefault(k, (name, [], set()))
+            if asin and asin not in asins:
+                asins.append(asin)
+            who.update(fold(a) for a in authors)
+
+        if self.abs_index is not None:  # your library first: its spelling wins
+            for a in self.abs_index.books:
+                if not a.missing and not a.comic:
+                    for n, _ in a.series:
+                        add(n, a.asin, a.authors)
+        for o in books:
+            if o.meta.series and o.type is not BookType.COMIC:
+                add(o.meta.series, o.meta.asin, o.meta.authors)
+        lists: dict[str, dict[str, float]] = {}
+
+        def members(k: str) -> dict[str, float]:
+            if k not in lists:
+                lists[k] = {}
+                name, asins, _ = known[k]
+                for asin in asins[:3]:
+                    try:
+                        lists[k] = self.audible.series_numbers(asin, name)
+                    except Exception:  # noqa: BLE001 - offline / Audible down: no number, as before
+                        lists[k] = {}
+                    if lists[k]:
+                        break
+            return lists[k]
+
+        for b in books:
+            m = b.meta
+            if m.series_index is not None or not m.title or b.type is BookType.COMIC \
+                    or "manual" in (b.sources.get("series"), b.sources.get("series_index")):
+                continue
+            if m.series:
+                keys = [_skey(m.series)] if _skey(m.series) in known else []
+            else:
+                mine = {fold(a) for a in m.authors}
+                keys = [k for k, (_, asins, who) in known.items() if asins and mine & who][:8]
+            title = re.sub(r"^(the|an?)(?=.)", "", fold(m.title))
+            for k in keys:
+                n = next((v for t, v in members(k).items() if re.sub(r"^(the|an?)(?=.)", "", t) == title), None)
+                if n is not None:
+                    if not m.series:
+                        m.series, b.sources["series"] = known[k][0], "audible series list"
+                    m.series_index, b.sources["series_index"] = n, "audible series list"
+                    b.notes.append(f"#{n:g} from Audible's list of {m.series}")
+                    break
+
     def fill_narrators(self, book: Book) -> None:
-        """No narrator after the lookup (a new release, an incomplete shop page): ask the other Audible
-        stores (same ASIN) and Storytel (same title and author). Only the narrator is taken."""
+        """No narrator after the lookup (a new release, an incomplete shop page): who reads the other
+        volumes of the series in your library, else the other Audible stores (same ASIN) and Storytel
+        (same title and author). Only the narrator is taken."""
         m = book.meta
         if book.type is not BookType.AUDIO or m.narrators:
             return
         found: list[str] = []
         source = ""
+        if self.abs_index and m.series and (same := self.abs_index.narrators_for(
+                book.author, m.series, swedish=norm_language(m.language) == "swedish")):
+            m.narrators, book.sources["narrators"] = list(same), "library"
+            book.notes.append(f"narrator as the series' other volumes in your library: {', '.join(same)}")
+            return
         from ..readers.sidecar import _own_folder, read_book_info  # noqa: PLC0415
         authors, narrators, _ = read_book_info(book.folder or _own_folder(book))
         if narrators and {fold(a) for a in authors} & {fold(a) for a in m.authors}:

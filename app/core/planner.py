@@ -121,6 +121,7 @@ class Move:
 
 @dataclass
 class Plan:
+    abs_index: object = None  # what your Audiobookshelf has (core.abs_index), when it could be read
     moves: list[Move] = field(default_factory=list)
     targets: dict[Book, Path] = field(default_factory=dict)  # book -> its folder
     review: dict[Book, str] = field(default_factory=dict)    # book -> why it goes to Review
@@ -187,6 +188,7 @@ class Planner:
             plan.targets[book] = target
             plan.moves.extend(moves)
         self._check(plan)
+        self._in_your_library(plan, books)
         self._find_identical(plan)  # last: it replaces the other reasons
         return plan
 
@@ -296,6 +298,20 @@ class Planner:
             taken.add(dst.name.lower())
             out.append(Move(mv.src, dst, mv.book) if dst != mv.dst else mv)
         return out
+
+    def _in_your_library(self, plan: Plan, books: list[Book]) -> None:
+        """Same ASIN / author + title / series number as a book in your Audiobookshelf - whatever its folder
+        is called ('...Real World, Too' next to '...Real World'): already there."""
+        from .abs_index import AbsIndex  # noqa: PLC0415
+        index = AbsIndex.load(self.folders)
+        plan.abs_index = index
+        if not index.books:
+            return
+        for book in books:
+            if book in plan.review or book in plan.identical or any(p.startswith("already in the library") for p in plan.problems.get(book, [])):
+                continue
+            if (hit := index.find_same(book)) is not None:
+                plan.add_problem(book, f"already in the library: {hit.library} - {Path(hit.path).name}")
 
     def _check(self, plan: Plan) -> None:
         # two books aiming at the same book folder - or the same number in the same series - are

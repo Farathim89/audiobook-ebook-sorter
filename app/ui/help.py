@@ -41,6 +41,10 @@ online source disagrees. The reason is in the notes on the right.</td><td>No</td
 <p>The right panel shows where each field came from: <i>tags</i>, <i>sidecar</i> (metadata.json / .opf),
 <i>filename</i>, <i>folder</i>, or an online source like <i>audible</i> or <i>anilist</i>. Fields from
 <i>filename</i> / <i>folder</i> are guesses - that's what makes a book Check.</p>
+<p>With the Audiobookshelf address and key in Settings, the <b>Your library</b> column says where a book fits:
+<i>have it</i> (then it is a Problem: already in the library, whatever its folder is called), <i>fills gap #5</i>,
+<i>next volume</i>, <i>new (you have up to #3)</i>, <i>new format</i> or <i>new series</i>. A series you already
+have keeps the name Audiobookshelf uses, and a new volume without a narrator gets the series' usual narrator.</p>
 <h3>The cover</h3>
 <p>The picture in the right panel is the cover sorting will write. Below it: its size and where it comes from
 (<i>inside the book</i>, <i>cover file next to the book</i>, <i>Audible</i>, <i>MangaDex (English edition)</i>,

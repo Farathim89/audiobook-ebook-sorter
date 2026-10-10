@@ -65,3 +65,24 @@ def test_gap_filler_fills_only_empty_fields_and_confirms_guesses():
     assert book.meta.year == 1990                        # kept ours
     assert book.meta.cover_url and book.sources["title"] == "openlibrary"  # filled + guess confirmed
     assert book.status is Status.READY
+
+
+def test_audible_takes_the_numbered_series():
+    from app.providers.audible import Audible
+    a = Audible.__new__(Audible)
+    a.region = "us"
+    c = a._candidate({"asin": "B0D3G9F94G", "title": "I Had That Same Dream Again",
+                      "authors": [{"name": "Yoru Sumino"}],
+                      "series": [{"title": "I Had That Same Dream Again", "sequence": ""},
+                                 {"title": "The Yoru Sumino Collection", "sequence": "3"}]})
+    assert (c.meta.series, c.meta.series_index) == ("The Yoru Sumino Collection", 3)
+
+
+def test_audible_takes_the_series_the_title_names():
+    from app.providers.audible import Audible
+    a = Audible.__new__(Audible)
+    a.region = "us"
+    c = a._candidate({"asin": "B1", "title": "Harry Potter and the Order of the Phoenix", "authors": [],
+                      "series": [{"title": "Wizarding World", "sequence": "5"},
+                                 {"title": "Harry Potter", "sequence": "5"}]})
+    assert (c.meta.series, c.meta.series_index) == ("Harry Potter", 5)

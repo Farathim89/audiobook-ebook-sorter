@@ -387,31 +387,46 @@ class MainWindow(QMainWindow):
 
         def done(result):
             total, found = result
-            text = report(total, found)
-            dlg = QDialog(self)
             n = sum(len(v) for v in found.values())
-            dlg.setWindowTitle(f"Audiobookshelf - {total} books, " + (f"{n} things to look at" if n else "all fine"))
-            dlg.resize(1000, 640)
-            v = QVBoxLayout(dlg)
-            box = QPlainTextEdit(text)
-            box.setReadOnly(True)
-            box.setLineWrapMode(QPlainTextEdit.NoWrap)
-            v.addWidget(box, 1)
-            buttons = QDialogButtonBox(QDialogButtonBox.Close)
-            save = buttons.addButton("Save report…", QDialogButtonBox.ActionRole)
-
-            def save_report():
-                from datetime import datetime  # noqa: PLC0415
-                path = f.state / "logs" / f"abs-check-{datetime.now():%Y%m%d-%H%M%S}.txt"
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(text, encoding="utf-8")
-                os.startfile(str(path))
-            save.clicked.connect(save_report)
-            buttons.rejected.connect(dlg.reject)
-            v.addWidget(buttons)
-            dlg.exec()
+            self._abs_report(f"Audiobookshelf - {total} books, " + (f"{n} things to look at" if n else "all fine"),
+                             report(total, found))
 
         self._run(lambda w: check_abs(client, lambda t: w.report(0, 0, t)), done, "Reading Audiobookshelf…")
+
+    def update_abs(self) -> None:
+        f = self.folders
+        if not f.abs_url or not f.abs_api_key:
+            QMessageBox.information(self, "Audiobookshelf", "Set the Audiobookshelf address and API key first:\n"
+                                    "Settings > Online. (In Audiobookshelf: Settings > API Keys.)")
+            return
+        from ..core.abs_update import update_abs  # noqa: PLC0415
+        client = AbsClient(f.abs_url, f.abs_api_key)
+        self._run(lambda w: update_abs(f, client, lambda t: w.report(0, 0, t)),
+                  lambda text: self._abs_report("Audiobookshelf updated", text), "Updating Audiobookshelf…")
+
+    def _abs_report(self, title: str, text: str) -> None:
+        f = self.folders
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.resize(1000, 640)
+        v = QVBoxLayout(dlg)
+        box = QPlainTextEdit(text)
+        box.setReadOnly(True)
+        box.setLineWrapMode(QPlainTextEdit.NoWrap)
+        v.addWidget(box, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        save = buttons.addButton("Save report…", QDialogButtonBox.ActionRole)
+
+        def save_report():
+            from datetime import datetime  # noqa: PLC0415
+            path = f.state / "logs" / f"abs-check-{datetime.now():%Y%m%d-%H%M%S}.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            os.startfile(str(path))
+        save.clicked.connect(save_report)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+        dlg.exec()
 
     def sort_collections(self) -> None:
         f = self.folders
@@ -993,6 +1008,9 @@ class MainWindow(QMainWindow):
                 ("Check Audiobookshelf", "Read every library and list what looks off: missing books, the same "
                  "book twice, a series or author spelled two ways, translators as authors, '(Light Novel)' in "
                  "names. Only reads.", "Check…", self.check_abs),
+                ("Update Audiobookshelf", "After a sort: back up listening progress, scan every library, give "
+                 "moved books their progress back, then check. Only ABS changes - never your files.",
+                 "Update…", self.update_abs),
                 ("Back up listening progress", "Save your Audiobookshelf progress (finished books, positions, "
                  "bookmarks) - do it before you move books between libraries.", "Back up…", self.backup_abs_progress),
                 ("Restore listening progress", "Put progress from a backup back - also when the books are in "
@@ -1445,13 +1463,17 @@ class MainWindow(QMainWindow):
         folders = self.folders
 
         def work(w: Worker):
+            from ..core.archives import unpack_archives  # noqa: PLC0415
+            unpacked = unpack_archives(sources, folders.done)  # book zips -> folders the scan can read
             books = load_books(sources, on_progress=lambda i, n, b: w.report(i, n, b.main_file.name))
             unify_names(books, folders.library_roots())
             done = {b for b in books if self.processed.contains(b)}
-            return books, done
+            return books, done, unpacked
 
         def finished(result):
-            books, done = result
+            books, done, unpacked = result
+            if unpacked:
+                self.statusBar().showMessage("Zips: " + "; ".join(unpacked), 20_000)
             todo = [b for b in books if b not in done]
             self.model.set_books(books, Planner(self.folders).plan(todo), done)
             self.model.checked = {b for b in books if self.model.default_checked(b)}

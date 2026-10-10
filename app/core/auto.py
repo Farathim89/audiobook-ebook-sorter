@@ -74,6 +74,9 @@ def auto_sort(folders: Folders, processed: Processed | None = None,
         log(f"Done folder: {d.name} went to the Recycle Bin")
     processed = processed or Processed(folders.state / "processed.txt")
     sources = [p for p in (sources or folders.sources) if p.is_dir()]
+    from .archives import unpack_archives  # noqa: PLC0415
+    for line in unpack_archives(sources, folders.done):
+        log(line)
     books = [b for b in load_books(sources) if not processed.contains(b)]
     result = AutoResult(found=len(books))
     if not books:

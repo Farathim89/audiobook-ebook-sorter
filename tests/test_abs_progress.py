@@ -48,3 +48,27 @@ def test_backup_then_restore_into_a_new_library(tmp_path, monkeypatch):
     assert done == 1 and abs_.written["new"]["isFinished"] is True and before.name.startswith("abs-progress-before-restore-")
     abs_.progress = [{"libraryItemId": "new", "isFinished": True, "currentTime": 100, "lastUpdate": 9}]
     assert [s.action for s in plan_restore(abs_, backup)] == ["keep"]       # never twice / never over newer
+
+
+def test_update_abs_scans_waits_and_moves_progress(tmp_path, monkeypatch):
+    from app.core.abs_update import update_abs
+    monkeypatch.setattr(abs_progress, "PORTABLE", None)
+    abs_ = FakeAbs()
+    abs_.libs[0]["mediaType"] = "book"
+    calls, scans = [], {"L1": 1}
+
+    def call(method, path, body=None):
+        calls.append((method, path))
+        if method == "POST":  # the scan: the book got a new entry (moved), done after two polls
+            abs_.items = {"L1": [{"id": "new", "path": "H:/b", "media": {"duration": 100, "numAudioFiles": 1,
+                                  "metadata": {"title": "Overlord, Vol. 1", "asin": "B1", "authorName": "Kugane Maruyama"}}}]}
+            abs_.progress = []
+            return {}
+        if sum(1 for m, _ in calls if m == "GET") > 3:
+            scans["L1"] = 2
+        return {"id": "L1", "lastScan": scans["L1"]}
+    abs_._call = call
+    text = update_abs(Folders(state=tmp_path), abs_, sleep=lambda s: None)
+    assert ("POST", "/libraries/L1/scan") in calls
+    assert abs_.written["new"]["isFinished"] is True
+    assert "Progress moved to the new entry of 1 books" in text and "Audiobookshelf check" in text

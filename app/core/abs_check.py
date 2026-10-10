@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 from typing import Callable
 
 from ..providers.abs import AbsClient
+from .abs_index import split_series
 from .text import fold
 
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
@@ -46,7 +47,7 @@ def check_abs(client: AbsClient, on_progress: Callable[[str], None] = lambda _: 
             md = media.get("metadata") or {}
             fmt = "audio" if media.get("numAudioFiles") else ("ebook" if media.get("ebookFormat") or media.get("ebookFile")
                                                              else "empty")
-            ser = (md.get("seriesName") or "").split(", ")[0]
+            ser = (split_series(md.get("seriesName") or "") or [""])[0]
             name = re.sub(r"\s*#\s*[\d.]+$", "", ser).strip()
             num = (re.search(r"#\s*([\d.]+)$", ser) or [None, None])[1]
             authors = [a.strip() for a in (md.get("authorName") or "").split(",") if a.strip()]
