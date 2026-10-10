@@ -19,12 +19,10 @@ from ..providers.audible import TLDS
 from . import theme
 
 INCOMING_FIELDS = [
-    ("audio_incoming", "Audiobooks incoming"),
-    ("books_incoming", "Books incoming (ebooks, manga)"),
+    ("audio_incoming", "Incoming"),
 ]
 OUTPUT_FIELDS = [
-    ("audio_sorted", "Sorted audiobooks"),
-    ("books_sorted", "Sorted books"),
+    ("sorted_root", "Sorted"),
     ("review", "Review (no author found)"),
     ("duplicates", "Duplicates (extra copies)"),
     ("done", "Done (originals after sorting)"),
@@ -176,26 +174,23 @@ class SettingsDialog(QDialog):
         self.extra.setMaximumHeight(56)
         self.extra.setPlaceholderText("more folders to scan, one per line (optional)")
         form.addRow("Also scan", self.extra)
-        one = QPushButton("Put all sorted output in one folder…")
-        one.setToolTip("Pick one folder; Sorted audiobooks, Sorted books and Review go inside it")
-        one.clicked.connect(self._one_output_folder)
-        one.setMinimumHeight(30)
-        holder = QWidget()
-        hl = QHBoxLayout(holder)
-        hl.setContentsMargins(0, 6, 0, 0)
-        hl.addWidget(one)
-        hl.addStretch()
-        form.addRow("", holder)
         for name, label in OUTPUT_FIELDS:
             form.addRow(label, self._path_row(name, getattr(folders, name)))
-        self.swedish = self._path_row("swedish_sorted", folders.swedish_sorted or "",
-                                      placeholder="empty = together with the other audiobooks")
-        form.addRow("Sorted Swedish audiobooks", self.swedish)
+            if name == "sorted_root":
+                how = QLabel("How books are sorted in it:\n"
+                             "   AudioBooks \\ Audiobooks · Light Novels \\ Author \\ Series \\ 1 - Title\n"
+                             "   Books \\ Light Novels · Manga · EBooks · Comics \\ Author \\ Series \\ 1 - Title\n"
+                             "   Svenska \\ Swedish audiobooks (when ticked below)")
+                how.setObjectName("muted")
+                form.addRow(how)
+                self.swedish_apart = QCheckBox("Swedish audiobooks apart, in Sorted \\ Svenska")
+                self.swedish_apart.setChecked(folders.swedish_sorted is not None)
+                form.addRow("", self.swedish_apart)
         form.addRow("App data (cache, history)", self._path_row("state", folders.state))
         self.create = QCheckBox("Create missing folders when saving")
         self.create.setChecked(first_run)
         form.addRow("", self.create)
-        tabs.addTab(two_columns(form, [0, 1, 2, 10, 11], ("Incoming && app data", "Sorted output"), stacked=True), "Folders")
+        tabs.addTab(two_columns(form, [0, 1, 8, 9], ("Incoming && app data", "Sorted output"), stacked=True), "Folders")
 
         box = QWidget()
         v = QVBoxLayout(box)
@@ -473,17 +468,6 @@ class SettingsDialog(QDialog):
         if path:
             edit.setText(str(Path(path)))
 
-    def _one_output_folder(self) -> None:
-        start = str(Path(self.edits["audio_sorted"].text()).parent)
-        path = QFileDialog.getExistingDirectory(self, "Folder for all sorted output", start)
-        if path:
-            base = Path(path)
-            self.edits["audio_sorted"].setText(str(base / "AudioBooks"))
-            self.edits["books_sorted"].setText(str(base / "Books"))
-            self.edits["review"].setText(str(base / "Review"))
-            self.edits["duplicates"].setText(str(base / "Duplicates"))
-            self.edits["done"].setText(str(base / "Done"))
-
     def _add_protected(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "A folder the app must never write to")
         if path:
@@ -528,10 +512,12 @@ class SettingsDialog(QDialog):
                                 "could never write there:\n\n" + "\n".join(clash))
             return
         for name, value in paths.items():
-            if name == "swedish_sorted":
-                self.folders.swedish_sorted = Path(value) if value else None
+            if name == "sorted_root":  # one Sorted folder: AudioBooks \ Books \ Svenska inside
+                self.folders.swedish_sorted = Path(value) / "Svenska" if self.swedish_apart.isChecked() else None
+                self.folders.set_sorted_root(Path(value))
             else:
                 setattr(self.folders, name, Path(value))
+        self.folders.books_incoming = None  # one Incoming folder for everything
         self.folders.extra_sources = lines(self.extra)
         self.folders.protected = lines(self.protected)
         self.folders.audible_region = self.region.currentText()
@@ -562,6 +548,8 @@ class SettingsDialog(QDialog):
         if self.create.isChecked():
             for name in ("audio_incoming", "books_incoming", "audio_sorted", "books_sorted", "review", "duplicates",
                          "done", "state"):
+                if getattr(self.folders, name) is None:
+                    continue
                 try:
                     getattr(self.folders, name).mkdir(parents=True, exist_ok=True)
                 except OSError as e:

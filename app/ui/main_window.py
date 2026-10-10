@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("&File")
         m.addActions([self.a_scan, self.a_lookup, self.a_sort])
         m.addSeparator()
-        m.addAction(A("Open &Incoming folders", lambda: self._open(self.folders.audio_incoming, self.folders.books_incoming)))
+        m.addAction(A("Open &Incoming folders", lambda: self._open(*[p for p in (self.folders.audio_incoming, self.folders.books_incoming) if p])))
         m.addAction(A("Open s&orted folders", lambda: self._open(self.folders.audio_sorted, self.folders.books_sorted)))
         m.addSeparator()
         m.addAction(self.a_settings)

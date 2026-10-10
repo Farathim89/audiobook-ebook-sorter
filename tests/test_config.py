@@ -42,3 +42,24 @@ def test_version_is_set():
     import re
     from app import __version__
     assert re.fullmatch(r"\d+\.\d+\.\d+", __version__)
+
+
+def test_books_incoming_is_optional(tmp_path):
+    import json
+    from app.config import load_folders
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"audio_incoming": str(tmp_path / "in"), "books_incoming": ""}), encoding="utf-8")
+    f = load_folders(p)
+    assert f.books_incoming is None
+    assert f.sources == [tmp_path / "in"]  # never '' (= the data folder in portable mode)
+
+
+def test_one_sorted_folder_holds_audio_books_and_svenska(tmp_path):
+    from app.config import Folders
+    f = Folders(state=tmp_path, swedish_sorted=tmp_path / "old svenska")
+    f.set_sorted_root(tmp_path / "-=Sorted=-")
+    assert (f.audio_sorted.name, f.books_sorted.name, f.swedish_sorted.name) == ("AudioBooks", "Books", "Svenska")
+    assert f.sorted_root == tmp_path / "-=Sorted=-"
+    g = Folders(state=tmp_path, swedish_sorted=None)
+    g.set_sorted_root(tmp_path / "S")
+    assert g.swedish_sorted is None  # Swedish not apart: stays with the other audiobooks

@@ -20,7 +20,7 @@ class Folders:
     # Neutral defaults for a fresh install (the first-run Settings dialog asks for real folders).
     # Sorted output goes to a staging folder OUTSIDE every library; the user moves books in by hand.
     audio_incoming: Path = DEFAULT_BASE / "Incoming" / "AudioBooks"
-    books_incoming: Path = DEFAULT_BASE / "Incoming" / "Books"
+    books_incoming: Path | None = DEFAULT_BASE / "Incoming" / "Books"  # optional: one Incoming is enough
     audio_sorted: Path = DEFAULT_BASE / "Sorted" / "AudioBooks"
     books_sorted: Path = DEFAULT_BASE / "Sorted" / "Books"
     review: Path = DEFAULT_BASE / "Sorted" / "Review"
@@ -87,8 +87,18 @@ class Folders:
         return False
 
     @property
+    def sorted_root(self) -> Path:
+        """The one Sorted folder: AudioBooks\\, Books\\ and Svenska\\ are inside it."""
+        return self.audio_sorted.parent
+
+    def set_sorted_root(self, root: Path) -> None:
+        self.audio_sorted, self.books_sorted = root / "AudioBooks", root / "Books"
+        if self.swedish_sorted is not None:  # Swedish audiobooks apart: inside Sorted too
+            self.swedish_sorted = root / "Svenska"
+
+    @property
     def sources(self) -> list[Path]:
-        return [self.audio_incoming, self.books_incoming, *self.extra_sources]
+        return [p for p in (self.audio_incoming, self.books_incoming, *self.extra_sources) if p]
 
     @property
     def kind_dirs(self) -> list[str]:
@@ -130,7 +140,7 @@ def load_folders(path: Path = SETTINGS_FILE) -> Folders:
         if f.name not in data:
             continue
         value, default = data[f.name], getattr(folders, f.name)
-        if f.name == "swedish_sorted":
+        if f.name in ("swedish_sorted", "books_incoming"):  # optional - empty is 'not used', never '.'
             value = _portable_path(value) if value else None
         elif isinstance(default, list):
             value = [_portable_path(v) for v in value]
