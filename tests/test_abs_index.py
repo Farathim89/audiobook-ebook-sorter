@@ -211,3 +211,27 @@ def test_new_volumes_join_the_librarys_series_folder(tmp_path):
     e = _book("Classroom of the Elite (Year 2), Vol. 12", "Classroom of the Elite (Year 2)", 12,
               authors=("Syougo Kinugasa",), btype=BookType.EBOOK)
     assert p.book_dir(e).parent.name == "Classroom of the Elite (Year 2)"  # no ebook of it in the library: its own name
+
+
+def test_abs_check_flags_one_asin_on_two_volumes():
+    from app.core.abs_check import CHECKS, check_abs
+
+    class FakeAbs:
+        def libraries(self):
+            return [{"id": "L", "name": "LN", "mediaType": "book"}]
+
+        def library_items(self, _):
+            def item(n, asin):
+                return {"path": f"H:/x/{n}", "media": {"numAudioFiles": 1, "metadata": {
+                    "title": f"Mushoku Tensei, Vol. {n}", "authorName": "Rifujin na Magonote",
+                    "seriesName": f"Mushoku Tensei #{n}", "asin": asin}}}
+            return [item(1, "B0CJWTXLPJ"), item(2, "B0CJWTXLPJ"), item(3, "B0CKWMHPD1")]
+    _, found = check_abs(FakeAbs())
+    assert len(found[CHECKS[10]]) == 1 and "#1" in found[CHECKS[10]][0] and "#2" in found[CHECKS[10]][0]
+
+
+def test_a_trilogy_in_the_library_covers_three():
+    box = AbsBook("p", "AudioBooks", "H:/A/S.L. Rowland/Pangea Online/1 - Pangea Online - The Complete Trilogy",
+                  "Pangea Online: The Complete Trilogy", ["S.L. Rowland"], [], [("Pangea Online", 1)], "", "audio", False)
+    assert box.numbers == {1.0, 2.0, 3.0}
+    assert AbsIndex([box]).find_same(_book("Pangea Online 2", "Pangea Online", 2, authors=("S.L. Rowland",))) is box

@@ -26,6 +26,7 @@ CHECKS = [
     "The same volume number twice in a series",
     "Series spelled two ways",
     "Author spelled two ways",
+    "The same ASIN on different books (a wrong ASIN - Audible / the sorter see one book)",
 ]
 
 
@@ -52,7 +53,8 @@ def check_abs(client: AbsClient, on_progress: Callable[[str], None] = lambda _: 
             num = (re.search(r"#\s*([\d.]+)$", ser) or [None, None])[1]
             authors = [a.strip() for a in (md.get("authorName") or "").split(",") if a.strip()]
             r = dict(lib=lib["name"], title=md.get("title") or "", authors=authors, series=name, num=num, fmt=fmt,
-                     path=it.get("path") or "", missing=bool(it.get("isMissing")))
+                     path=it.get("path") or "", missing=bool(it.get("isMissing")),
+                     asin=(md.get("asin") or "").upper())
             items.append(r)
             line = f"[{r['lib']}] {', '.join(authors) or '(no author)'} | " + (f"{name} #{num}" if num else name or r["title"])
             if r["missing"]:
@@ -104,6 +106,14 @@ def check_abs(client: AbsClient, on_progress: Callable[[str], None] = lambda _: 
     for a, b in zip(keys, keys[1:]):  # 'Kumo Kagyu' / 'Kumo Kagyuu'
         if len(a) > 6 and (a.replace("uu", "u") == b.replace("uu", "u") or a.replace("oo", "o") == b.replace("oo", "o")):
             out[CHECKS[9]].append(" / ".join(f"'{n}'" for n in [*auth[a], *auth[b]]))
+    asins = defaultdict(list)
+    for r in live:
+        if r.get("asin"):
+            asins[(r["lib"], r["asin"])].append(r)
+    for (lib, asin), rs in asins.items():
+        if len({(r["series"], r["num"], r["title"]) for r in rs}) > 1:
+            out[CHECKS[10]].append(f"[{lib}] {asin}: " + "  |  ".join(
+                f"{r['series']} #{r['num']}" if r["num"] else r["title"] for r in rs))
     return len(live), {k: sorted(set(out[k])) for k in CHECKS if out.get(k)}
 
 

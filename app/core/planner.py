@@ -293,6 +293,7 @@ class Planner:
         if book.type is not BookType.COMIC:
             return clean_name(series, limit)
         suffix = f" ({'Manga' if book.manga else 'Comic'})"
+        series = re.sub(r"(?i)(?:\s*\((?:manga|comic)\))+$", "", series)  # never '(Manga) (Manga)'
         return clean_name(series, max(20, limit - len(suffix))) + suffix
 
     def book_name(self, book: Book) -> str:

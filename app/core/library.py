@@ -493,7 +493,8 @@ def move_duplicates(folders: Folders, moves: list, cancelled: Callable[[], bool]
             book = mv.book
             if on_progress:
                 on_progress(i, len(moves), book.meta.title or book.main_file.name)
-            if mv.library is not None:
+            if mv.library is not None and not folders.is_protected(mv.library):
+                # (a copy in your protected library - found through Audiobookshelf - is only read, never filled)
                 _fill_library_copy(ed, mv.library, book)
             _move_out(ed, book, folders.duplicates)
             done += 1

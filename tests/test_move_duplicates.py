@@ -60,3 +60,18 @@ def test_move_extra_copies_and_library_duplicates(tmp_path):
     undo(next(r for r in list_runs(f.state / "history") if r.run_id == run_id))
     after = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file() and "state" not in p.parts)
     assert after == before
+
+
+def test_a_protected_library_copy_is_never_written(tmp_path):
+    from app.core.duplicates import DupMove
+    src, lib_root = tmp_path / "Incoming", tmp_path / "Library"
+    f = Folders(books_sorted=tmp_path / "Sorted", duplicates=tmp_path / "Duplicates", state=tmp_path / "state",
+                protected=[lib_root], audio_incoming=tmp_path / "none", books_incoming=src)
+    _put(src / "Fujino Oomori/DanMachi 1.epub", b"e" * 300)
+    lib = lib_root / "Manga/Fujino Oomori/DanMachi/1 - DanMachi"
+    _put(lib / "DanMachi 1.epub", b"e" * 290)
+    book = load_books([src])[0]
+    book.meta.isbn, book.meta.description = "9780316339155", "a description the library copy lacks"
+    run_id, n = move_duplicates(f, [DupMove(book, "already in the library", lib)])
+    assert n == 1 and (f.duplicates / "Incoming/Fujino Oomori/DanMachi 1.epub").exists()
+    assert sorted(p.name for p in lib.iterdir()) == ["DanMachi 1.epub"]  # nothing written into the library

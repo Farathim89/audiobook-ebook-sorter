@@ -63,6 +63,9 @@ class AbsBook:
             or re.match(r"^(\d+)-(\d+) - ", re.split(r"[\\/]", self.path.rstrip("\\/"))[-1])
         if m and int(m.group(1)) < int(m.group(2)) <= int(m.group(1)) + 30:
             out |= {float(n) for n in range(int(m.group(1)), int(m.group(2)) + 1)}
+        elif (size := box_size(f"{self.title} {self.path.rstrip(chr(92) + '/').replace(chr(92), '/').split('/')[-1]}"))                 and not any(box_size(n) for n, _ in self.series):  # a trilogy box, not 'The Earthsea Quartet' itself
+            start = int(min(out)) if out else 1
+            out |= {float(k) for k in range(start, start + size)}
         return out
 
     @property
@@ -198,3 +201,12 @@ def library_status(book: Book, index: AbsIndex) -> str:
     if n <= int(max(have)) + 1:
         return "next volume"
     return f"new (you have up to #{max(have):g})"
+
+
+_BOX_WORDS = {"duology": 2, "dilogy": 2, "trilogy": 3, "tetralogy": 4, "quadrilogy": 4, "quartet": 4, "pentalogy": 5}
+
+
+def box_size(text: str) -> int:
+    """How many books a box set holds by its name: 'The Complete Trilogy' -> 3, 'Duology' -> 2 (0: none)."""
+    m = re.search(r"(?i)\b(" + "|".join(_BOX_WORDS) + r")\b", text or "")
+    return _BOX_WORDS[m.group(1).lower()] if m else 0

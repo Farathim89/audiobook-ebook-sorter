@@ -269,3 +269,12 @@ def test_full_series_title_with_a_dash_gets_the_short_form():
     short = _book("Trapped in a Dating Sim, Vol. 9", series, 9, btype=BookType.COMIC)
     assert folder_title(long_, False) == "Trapped in a Dating Sim, Vol. 10"
     assert folder_title(short, False) == "Trapped in a Dating Sim, Vol. 9"
+
+
+def test_manga_tag_only_once_in_the_series_folder():
+    from app.core.planner import Planner
+    b = _book("Vol. 1", "Mushoku Tensei Jobless Reincarnation (Manga)", 1, btype=BookType.COMIC)
+    b.manga = True
+    assert Planner.series_folder(b) == "Mushoku Tensei Jobless Reincarnation (Manga)"
+    b.meta.series = "Skeleton Knight in Another World"
+    assert Planner.series_folder(b) == "Skeleton Knight in Another World (Manga)"
