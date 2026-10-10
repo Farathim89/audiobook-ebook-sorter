@@ -39,15 +39,30 @@ class AutoResult:
 
 def find_duplicates(folders: Folders, lookup: OnlineLookup | None = None,
                     on_progress: Callable[[int, int, Book], None] | None = None,
-                    cancelled: Callable[[], bool] = lambda: False):
+                    cancelled: Callable[[], bool] = lambda: False, scanned_at: float | None = None):
     """Every book in Incoming (also the ones marked sorted): which copies can leave for the
-    Duplicates folder, and which stay because they beat the library's copy."""
-    books = [b for b in load_books([p for p in folders.sources if p.is_dir()]) if not still_downloading(b)]
+    Duplicates folder, and which stay because they beat the library's copy.
+    scanned_at: after a sort you started - a file unchanged since that scan is finished (you saw it in the
+    list), however new it is; only one changed since then may still be downloading."""
+    books = [b for b in load_books([p for p in folders.sources if p.is_dir()])
+             if not still_downloading(b) or (scanned_at and unchanged_since(b, scanned_at))]
     (lookup or OnlineLookup(folders)).run(books, on_progress=on_progress, cancelled=cancelled)
     unify_names(books, folders.library_roots())
     processed = Processed(folders.state / "processed.txt")
     sorted_here = {b for b in books if processed.contains(b)}  # originals this app sorted: they stay
     return plan_duplicate_moves(books, Planner(folders).plan(books), stay=sorted_here)
+
+
+def unchanged_since(book: Book, when: float) -> bool:
+    """No file of the book changed after `when` and none is a part file ('.part', '.!qB')."""
+    try:
+        if any(f.stat().st_mtime > when for f in [*book.files, *book.extras]):
+            return False
+        if book.folder and any(p.suffix.lower() in DOWNLOADING_EXTS for p in book.folder.rglob("*")):
+            return False
+    except OSError:
+        return False
+    return True
 
 
 def still_downloading(book: Book, now: float | None = None) -> bool:

@@ -35,3 +35,20 @@ def test_chapters_beat_a_little_extra_length():
     plain, chaptered = info(20300, 0), info(19800, 11)
     assert not clearly_better(plain, chaptered) and best_copy([plain, chaptered]) is chaptered
     assert clearly_better(info(25000, 0), chaptered)  # much longer: the other one is missing a part
+
+
+def test_a_fresh_download_you_scanned_counts_as_finished(tmp_path):
+    import os
+    import time
+    from app.core.auto import still_downloading, unchanged_since
+    from app.core.models import Book, BookType
+    f = tmp_path / "86 v08.epub"
+    f.write_bytes(b"x")
+    b = Book(BookType.EBOOK, [f], tmp_path)
+    assert still_downloading(b)                    # written just now
+    assert unchanged_since(b, time.time() + 1)     # ... but not touched since the scan
+    os.utime(f, (time.time() + 5, time.time() + 5))
+    assert not unchanged_since(b, time.time() + 1)  # changed after the scan: maybe still downloading
+    (tmp_path / "next.epub.part").write_bytes(b"")
+    b.folder = tmp_path
+    assert not unchanged_since(b, time.time() + 10)

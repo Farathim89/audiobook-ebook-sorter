@@ -1,2 +1,2 @@
 """AudioBooks & EBook Sorter."""
-__version__ = "0.3.6"  # bump with every GitHub release
+__version__ = "0.3.7"  # bump with every GitHub release

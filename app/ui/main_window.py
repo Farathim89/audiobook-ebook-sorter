@@ -1455,6 +1455,8 @@ class MainWindow(QMainWindow):
 
     # -- actions -----------------------------------------------------------
     def scan(self) -> None:
+        import time  # noqa: PLC0415
+        self._scanned_at = time.time()  # files unchanged since then are finished downloads (after-sort duplicates)
         empty_done(self.folders)  # Done\<day> folders past the Settings limit -> Recycle Bin
         sources = [p for p in self.folders.sources if p.is_dir()]
         if not sources:
@@ -1582,7 +1584,8 @@ class MainWindow(QMainWindow):
                 # extra copies and books the library already has: out of Incoming (undoable)
                 from ..core.library import move_duplicates  # noqa: PLC0415
                 w.report(0, 0, f"Duplicates{STEP_SEP}looking for copies the library already has")
-                moves, _ = find_duplicates(self.folders, self.lookup, cancelled=w.cancelled)
+                moves, _ = find_duplicates(self.folders, self.lookup, cancelled=w.cancelled,
+                                           scanned_at=getattr(self, "_scanned_at", None))
                 if moves and not w.cancelled():
                     result.duplicates = move_duplicates(
                         self.folders, moves, w.cancelled,
