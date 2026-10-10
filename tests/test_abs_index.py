@@ -122,3 +122,29 @@ def test_a_comma_inside_a_series_name():
     spin = "Trapped in a Dating Sim: Otome Games Are Tough for Us, Too!"
     assert split_series(f"{spin} #1") == [f"{spin} #1"]
     assert split_series("Solo Leveling #2, Yen Audio #5") == ["Solo Leveling #2", "Yen Audio #5"]
+
+
+def test_shared_head_counts_the_spin_off_in_your_library(tmp_path):
+    from app.config import Folders
+    from app.core.planner import Planner, folder_title
+    p = Planner(Folders(state=tmp_path, audio_sorted=tmp_path / "a", books_sorted=tmp_path / "b"))
+    p._abs = AbsIndex([AbsBook("s1", "Audiobooks - Light Novels", "H:/x", "Too 1", ["Yomu Mishima"], [],
+                               [("Trapped in a Dating Sim: Otome Games Are Tough for Us, Too!", 1)], "", "audio", False)])
+    main = _book("Trapped in a Dating Sim: The World of Otome Games is Tough for Mobs, Vol. 8",
+                 "Trapped in a Dating Sim: The World of Otome Games is Tough for Mobs", 8, authors=("Yomu Mishima",))
+    assert p.shared_head(main)
+    assert folder_title(main, p.shared_head(main)) == "The World of Otome Games is Tough for Mobs, Vol. 8"
+    manga = _book("x", "Trapped in a Dating Sim: The World of Otome Games is Tough for Mobs", 8,
+                  authors=("Yomu Mishima",), btype=BookType.COMIC)
+    assert not p.shared_head(manga)  # the spin-off is no manga
+
+
+def test_manga_takes_the_light_novel_spelling():
+    look = OnlineLookup.__new__(OnlineLookup)
+    ln = "Trapped in a Dating Sim: The World of Otome Games is Tough for Mobs"
+    look.abs_index = AbsIndex([AbsBook("l1", "Audiobooks - Light Novels", "H:/x", "Vol 1", ["Yomu Mishima"], [],
+                                       [(ln, 1)], "", "audio", False)])
+    m = _book("Vol 10", "Trapped in a Dating Sim - The World of Otome Games is Tough for Mobs (Manga)", 10,
+              authors=("Yomu Mishima",), btype=BookType.COMIC)
+    look._series_as_in_abs([m])
+    assert m.meta.series == ln + " (Manga)"

@@ -363,12 +363,22 @@ class OnlineLookup:
         if not self.abs_index or not self.abs_index.books:
             return
         for b in books:
-            if b.meta.series and b.sources.get("series") != "manual" and b.type is not BookType.COMIC:
+            if not b.meta.series or b.sources.get("series") == "manual":
+                continue
+            if b.type is BookType.COMIC:
+                # your manga library's spelling, else the light novel's ('Trapped in a Dating Sim: The World of
+                # ...' - not the folder's '... - The World of ...') with the manga tag
+                base = re.sub(r"(?i)\s*\((?:manga|comic)\)$", "", b.meta.series)
+                tag = b.meta.series[len(base):]
+                name = self.abs_index.series_name(b.author, base, comic=True)
+                if not name and (ln := self.abs_index.series_name(b.author, base)):
+                    name = ln + tag
+            else:
                 name = self.abs_index.series_name(b.author, b.meta.series,
                                                   swedish=norm_language(b.meta.language) == "swedish")
-                if name and name != b.meta.series:
-                    b.notes.append(f"series spelled as in your library: {name}")
-                    b.meta.series = name
+            if name and name != b.meta.series:
+                b.notes.append(f"series spelled as in your library: {name}")
+                b.meta.series = name
 
     def _numbers_from_series_lists(self, books: list[Book]) -> None:
         """A book with no number - or no series at all - that no shop match numbered ('I am Blue, in Pain, and

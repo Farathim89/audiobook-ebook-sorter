@@ -259,3 +259,13 @@ def test_new_books_follow_the_library(tmp_path):
     follow_the_library([villainess, secret], [lib])
     assert villainess.light_novel
     assert (secret.meta.series, secret.meta.series_index, secret.light_novel) == ("The Yoru Sumino Collection", 4.0, True)
+
+
+def test_full_series_title_with_a_dash_gets_the_short_form():
+    from app.core.planner import folder_title
+    series = "Trapped in a Dating Sim - The World of Otome Games is Tough for Mobs (Manga)"
+    long_ = _book("Trapped in a Dating Sim - The World of Otome Games is Tough for Mobs, Vol. 10", series, 10,
+                  btype=BookType.COMIC)
+    short = _book("Trapped in a Dating Sim, Vol. 9", series, 9, btype=BookType.COMIC)
+    assert folder_title(long_, False) == "Trapped in a Dating Sim, Vol. 10"
+    assert folder_title(short, False) == "Trapped in a Dating Sim, Vol. 9"

@@ -96,13 +96,18 @@ def _folder_title(book: Book, shared_head: bool = True) -> str:
     folder_series = lambda s: _folder_series(s, shared_head)  # noqa: E731
     m = book.meta
     title = m.title or book.main_file.stem
+    # 'Trapped in a Dating Sim - The World of ... for Mobs (Manga)' (a folder's spelling): the same series as
+    # 'Trapped in a Dating Sim: The World of ... for Mobs' for the comparison and the short form
+    series = re.sub(r"(?i)\s*\((?:manga|comic|light novel)\)$", "", m.series or "")
+    if " - " in series and ":" not in series:
+        series = series.replace(" - ", ": ", 1)
     if m.series and m.series_index is not None and (vol := parse_volume(title)) and vol[1] == m.series_index \
-            and (fold(vol[0]).startswith(fold(m.series))
-                 or (len(fold(vol[0])) >= 6 and series_head(m.series) == fold(vol[0]) and ":" in m.series)):
+            and (fold(vol[0]).startswith(fold(series))
+                 or (len(fold(vol[0])) >= 6 and series_head(series) == fold(vol[0]) and ":" in series)):
         # (also 'Trapped in a Dating Sim, Vol. 1' - only the head of 'Trapped in a Dating Sim: The World of...')
         # 'I Parry Everything: What Do You Mean...Yet!, Vol. 1' with series 'I Parry Everything: ...':
         # the folder says 'I Parry Everything, Vol. 1' - like every other volume
-        return f"{folder_series(m.series)}, Vol. {format_index(m.series_index)}"
+        return f"{folder_series(series)}, Vol. {format_index(m.series_index)}"
     if m.series and title.startswith(m.series):
         title = folder_series(m.series) + title[len(m.series):]
     return title
@@ -151,6 +156,7 @@ class Planner:
         self.allow_protected = allow_protected
         self._batch_series: dict[str, set[str]] = {}  # author -> the series names in this sort
         self._on_disk: dict[str, set[str]] = {}
+        self._abs = None  # what your Audiobookshelf has (core.abs_index), read on first need
 
     def shared_head(self, book: Book) -> bool:
         """Does the author have another series starting with this one's main name? ('Ascendance of a
@@ -167,6 +173,13 @@ class Planner:
             except OSError:
                 self._on_disk[key] = set()
         names |= self._on_disk[key]
+        # ... and in your library (Audiobookshelf): the spin-off may only be there
+        if self._abs is None:
+            from .abs_index import AbsIndex  # noqa: PLC0415
+            self._abs = AbsIndex.load(self.folders)
+        comic = book.type is BookType.COMIC
+        names |= {n for a in self._abs.books if not a.missing and a.comic == comic
+                  and fold(book.author) in {fold(x) for x in a.authors} for n, _ in a.series}
         mine = fold(clean_name(series))
         head = series_head(series)
         return any(series_head(n) == head and fold(clean_name(n)) != mine for n in names)
