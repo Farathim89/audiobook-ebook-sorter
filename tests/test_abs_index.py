@@ -148,3 +148,52 @@ def test_manga_takes_the_light_novel_spelling():
               authors=("Yomu Mishima",), btype=BookType.COMIC)
     look._series_as_in_abs([m])
     assert m.meta.series == ln + " (Manga)"
+
+
+def test_a_box_set_covers_its_books():
+    box = AbsBook("b", "AudioBooks", "H:/A/M.R. Forbes/Chaos of the Covenant/1-4 - Hell's Rejects, Books 1-4",
+                  "Hell's Rejects, Books 1-4", ["M.R. Forbes"], [], [("Chaos of the Covenant", 1)], "", "audio", False)
+    ix = AbsIndex([box])
+    for n in (2, 3, 4):
+        assert ix.find_same(_book("x", "Chaos of the Covenant", n, authors=("M.R. Forbes",))) is box
+    assert ix.find_same(_book("x", "Chaos of the Covenant", 5, authors=("M.R. Forbes",))) is None
+    assert library_status(_book("x", "Chaos of the Covenant", 5, authors=("M.R. Forbes",)), ix) == "next volume"
+
+
+def test_own_side_series_kept_when_the_shop_has_no_number():
+    from app.core.online import _own_series_when_unnumbered, _series_head_vote
+    b = _book("Adachi and Shimamura: Short Stories 2", "Adachi and Shimamura", 1, authors=("Hitoma Iruma",))
+    b.sources.update(series="audible", series_index="sidecar")
+    mains = [_book(f"Adachi and Shimamura, Vol. {n}", "Adachi and Shimamura", n, authors=("Hitoma Iruma",))
+             for n in (8, 9, 10)]
+    _own_series_when_unnumbered([b], {id(b): "Adachi and Shimamura: Short Stories"},
+                                {id(b): "Adachi and Shimamura: Short Stories"})
+    _series_head_vote([b, *mains])
+    assert (b.meta.series, b.meta.title) == ("Adachi and Shimamura: Short Stories", "Adachi and Shimamura: Short Stories")
+
+
+def test_a_store_as_author_takes_the_folder_series(tmp_path):
+    from app.core.online import _odd_one_in_folder
+    d = tmp_path / "Alya"
+    books = []
+    for n in (4, 5, 6):
+        b = _book(f"Alya Sometimes Hides Her Feelings in Russian, Vol. {n}", "Alya Sometimes Hides Her Feelings in Russian",
+                  n, authors=("Sunsunsun",), btype=BookType.EBOOK)
+        b.files = [d / f"Alya v0{n}.epub"]
+        books.append(b)
+    odd = _book("Alya Sometimes Hides Her Feelings in Russian, Vol. 4.5 Pinup Art Collection", None,
+                authors=("BOOK☆WALKER Global",), btype=BookType.EBOOK)
+    odd.files = [d / "Alya Sometimes Hides Her Feelings in Russian v04.6 - Pinup Art Collection.epub"]
+    _odd_one_in_folder([*books, odd])
+    assert (odd.meta.authors, odd.meta.series, odd.meta.series_index) == (
+        ["Sunsunsun"], "Alya Sometimes Hides Her Feelings in Russian", 4.6)
+
+
+def test_a_new_year_is_written_like_the_library():
+    look = OnlineLookup.__new__(OnlineLookup)
+    look.abs_index = AbsIndex([AbsBook("y2", "Light Novels", "H:/x", "Y2 1", ["Syougo Kinugasa"], [],
+                                       [("Classroom of the Elite (Year 2)", 1)], "", "ebook", False)])
+    b = _book("Classroom of the Elite: Year 3, Vol. 1", "Classroom of the Elite: Year 3", 1,
+              authors=("Syougo Kinugasa",), btype=BookType.EBOOK)
+    look._series_as_in_abs([b])
+    assert b.meta.series == "Classroom of the Elite (Year 3)"

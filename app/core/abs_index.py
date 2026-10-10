@@ -55,6 +55,17 @@ class AbsBook:
     language: str = ""  # 'swedish' / 'english' / ''
 
     @property
+    def numbers(self) -> set[float]:
+        """The volumes this item holds: its series number, or all of a box set ('Hell's Rejects, Books 1-4' /
+        folder '1-4 - ...' -> 1, 2, 3, 4)."""
+        out = {i for _, i in self.series if i is not None}
+        m = re.search(r"(?i)\bbooks?\s+(\d+)\s*-\s*(\d+)\b", self.title) \
+            or re.match(r"^(\d+)-(\d+) - ", re.split(r"[\\/]", self.path.rstrip("\\/"))[-1])
+        if m and int(m.group(1)) < int(m.group(2)) <= int(m.group(1)) + 30:
+            out |= {float(n) for n in range(int(m.group(1)), int(m.group(2)) + 1)}
+        return out
+
+    @property
     def swedish(self) -> bool:
         """The Swedish translation of a series is not the English book with the same number."""
         return "svensk" in self.library.lower() or self.language == "swedish"
@@ -140,7 +151,8 @@ class AbsIndex:
                 return hit
         if m.series and m.series_index is not None:
             key = _skey(m.series)
-            return next((b for b in mine if any(_skey(n) == key and i == m.series_index for n, i in b.series)), None)
+            return next((b for b in mine if any(_skey(n) == key for n, _ in b.series)
+                         and m.series_index in b.numbers), None)
         return None
 
     def series_name(self, author: str | None, series: str, comic: bool = False, swedish: bool = False) -> str | None:
@@ -161,7 +173,7 @@ class AbsIndex:
                       swedish: bool = False) -> set[float]:
         key = _skey(series)
         return {i for b in self._live(fmt, comic, swedish) if (not author or fold(author) in {fold(a) for a in b.authors})
-                for n, i in b.series if i is not None and _skey(n) == key}
+                for n, _ in b.series if _skey(n) == key for i in b.numbers}
 
 
 def library_status(book: Book, index: AbsIndex) -> str:

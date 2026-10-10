@@ -108,6 +108,9 @@ def _folder_title(book: Book, shared_head: bool = True) -> str:
         # 'I Parry Everything: What Do You Mean...Yet!, Vol. 1' with series 'I Parry Everything: ...':
         # the folder says 'I Parry Everything, Vol. 1' - like every other volume
         return f"{folder_series(series)}, Vol. {format_index(m.series_index)}"
+    if m.series and m.series_index is not None and fold(title) == fold(series):
+        # the title is just the series name ('Adachi and Shimamura: Short Stories', the first of them)
+        return f"{folder_series(series)}, Vol. {format_index(m.series_index)}"
     if m.series and title.startswith(m.series):
         title = folder_series(m.series) + title[len(m.series):]
     return title
@@ -161,7 +164,9 @@ class Planner:
     def shared_head(self, book: Book) -> bool:
         """Does the author have another series starting with this one's main name? ('Ascendance of a
         Bookworm: Part 5' next to ': Hannelore's Fifth Year...' - then the subtitle tells them apart)"""
-        series = book.meta.series or ""
+        series = re.sub(r"(?i)\s*\((?:manga|comic|light novel)\)$", "", book.meta.series or "")
+        if " - " in series and ":" not in series:  # a folder's spelling, as _folder_title reads it
+            series = series.replace(" - ", ": ", 1)
         if not re.search(r"[:：]", series) or not book.author:
             return False
         names = set(self._batch_series.get(fold(book.author), ()))
@@ -178,10 +183,13 @@ class Planner:
             from .abs_index import AbsIndex  # noqa: PLC0415
             self._abs = AbsIndex.load(self.folders)
         comic = book.type is BookType.COMIC
-        names |= {n for a in self._abs.books if not a.missing and a.comic == comic
-                  and fold(book.author) in {fold(x) for x in a.authors} for n, _ in a.series}
+        mine_by_author = [a for a in self._abs.books if not a.missing
+                          and fold(book.author) in {fold(x) for x in a.authors}]
+        names |= {n for a in mine_by_author if a.comic == comic for n, _ in a.series}
         mine = fold(clean_name(series))
         head = series_head(series)
+        if any(fold(n) == head for a in mine_by_author for n, _ in a.series):
+            return True  # 'Bungo Stray Dogs: The Official Comic Anthology' next to the series 'Bungo Stray Dogs'
         return any(series_head(n) == head and fold(clean_name(n)) != mine for n in names)
 
     def plan(self, books: list[Book]) -> Plan:

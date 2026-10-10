@@ -62,6 +62,9 @@ class Audible:
             for p in (data or {}).get("products") or []:
                 if p.get("title") and p.get("asin") in seq:
                     out[fold(clean_title(p["title"]))] = seq[p["asin"]]
+                    if p.get("subtitle") and len(fold(p["subtitle"])) >= 12:
+                        # 'Campfire Cooking...: Volume 7' + subtitle 'Red Meat Steak and the Creator God's Judgement'
+                        out.setdefault(fold(p["subtitle"]), seq[p["asin"]])
         return out
 
     def by_asin(self, asin: str) -> list[Candidate]:

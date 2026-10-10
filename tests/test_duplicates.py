@@ -24,3 +24,14 @@ def test_duplicate_group_and_best_copy(tmp_path):
     rest = [b for b in books if b is not best.book]
     plan = Planner(Folders(books_sorted=tmp_path / "out", protected=[])).plan([best.book])
     assert not plan.problems and rest
+
+
+def test_chapters_beat_a_little_extra_length():
+    from pathlib import Path
+    from app.core.duplicates import CopyInfo, best_copy, clearly_better
+    from app.core.models import Book, BookType
+    def info(d, ch):
+        return CopyInfo(Book(BookType.AUDIO, [Path("x.m4b")], Path(".")), 1, 300_000_000, "m4b", d, 125, ch)
+    plain, chaptered = info(20300, 0), info(19800, 11)
+    assert not clearly_better(plain, chaptered) and best_copy([plain, chaptered]) is chaptered
+    assert clearly_better(info(25000, 0), chaptered)  # much longer: the other one is missing a part

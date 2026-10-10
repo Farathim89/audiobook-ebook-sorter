@@ -19,6 +19,7 @@ class CopyInfo:
     formats: str         # "mp3", "epub + pdf"
     duration: float = 0  # seconds, audiobooks only
     bitrate: int = 0     # kbit/s of the first file, audiobooks only
+    chapters: int = 0    # chapters in a single-file audiobook (several files: one per file)
 
     @property
     def summary(self) -> str:
@@ -28,6 +29,8 @@ class CopyInfo:
             parts.append(f"{h}h {rest // 60:02d}m")
         if self.bitrate:
             parts.append(f"{self.bitrate} kbit/s")
+        if self.book.type is BookType.AUDIO and self.files == 1:
+            parts.append(f"{self.chapters} chapters" if self.chapters else "no chapters")
         return " · ".join(parts)
 
 
@@ -46,20 +49,31 @@ def describe(book: Book) -> CopyInfo:
             info.duration += getattr(a.info, "length", 0) or 0
             if i == 0:
                 info.bitrate = int((getattr(a.info, "bitrate", 0) or 0) / 1000)
+            info.chapters += len(getattr(a, "chapters", None) or []) if len(book.files) == 1 else 1
     return info
+
+
+def _whole(c: CopyInfo, longest: float) -> bool:
+    """Close enough to the longest copy to count as complete (a few minutes of padding or silence)."""
+    return not longest or c.duration >= longest * 0.95
 
 
 def best_copy(infos: list[CopyInfo]) -> CopyInfo:
     """Most complete first (longest / biggest), then better quality, then m4b / epub."""
+    longest = max((c.duration for c in infos), default=0)
+
     def key(c: CopyInfo):
         preferred = "m4b" in c.formats or "epub" in c.formats
-        return (round(c.duration / 60), c.bitrate, preferred, c.size)
+        # 'Baccano! 6': 5.6 h without chapters vs 5.5 h with all 11 - the chaptered one is the better copy
+        return (_whole(c, longest), c.chapters >= 3, round(c.duration / 60), c.bitrate, preferred, c.size)
     return max(infos, key=key)
 
 
 def clearly_better(a: CopyInfo, b: CopyInfo) -> bool:
     """Is copy a clearly better than copy b (longer, higher bitrate, or much bigger)?"""
     if a.duration and b.duration:
+        if b.chapters >= 3 > a.chapters and a.duration <= b.duration * 1.05:
+            return False  # a little longer but no chapters: not better than a copy with them
         if a.duration > b.duration * 1.02:
             return True
         return a.bitrate > b.bitrate * 1.15 and a.duration >= b.duration * 0.98

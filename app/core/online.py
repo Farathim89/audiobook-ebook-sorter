@@ -202,6 +202,7 @@ class OnlineLookup:
         from .abs_index import AbsIndex  # noqa: PLC0415
         self.abs_index = AbsIndex.load(self.folders, fresh=True)
         own_series = {id(b): b.meta.series for b in books}  # what the books' own files say, before the shops
+        own_titles = {id(b): b.meta.title for b in books}
         for b in books:
             if b not in todo:
                 b.looked_up = True  # nothing to ask for this one
@@ -228,8 +229,10 @@ class OnlineLookup:
         _doubled_pen_names(books)
         _full_series_names(books)
         _keep_shared_series(books, own_series)
+        _own_series_when_unnumbered(books, own_series, own_titles)
         _series_head_vote(books)
         _from_folder_sibling(books)
+        _odd_one_in_folder(books)
         _roles_by_series(books)
         self.publishers.apply(books)  # 'Yen Audio' -> light novel (Tools > Publishers)
         _same_kind_per_series(books)
@@ -376,9 +379,28 @@ class OnlineLookup:
             else:
                 name = self.abs_index.series_name(b.author, b.meta.series,
                                                   swedish=norm_language(b.meta.language) == "swedish")
+                if not name:
+                    name = self._sibling_style(b)
             if name and name != b.meta.series:
                 b.notes.append(f"series spelled as in your library: {name}")
                 b.meta.series = name
+
+    def _sibling_style(self, b: Book) -> str | None:
+        """A new part of a series you have, written the way your library writes the others: 'Classroom of the
+        Elite: Year 3' next to your 'Classroom of the Elite (Year 2)' -> 'Classroom of the Elite (Year 3)'."""
+        m = re.match(r"^(.*?)(?::\s*|\s+-\s+|\s*\()(Year|Part|Season|Arc)\s*(\d+)\)?$", b.meta.series or "", re.I)
+        if not m:
+            return None
+        base, word, n = m.group(1).strip(), m.group(2), m.group(3)
+        mine = {fold(a) for a in b.meta.authors}
+        for a in self.abs_index.books:
+            if a.missing or not mine & {fold(x) for x in a.authors}:
+                continue
+            for name, _ in a.series:
+                s = re.match(rf"^{re.escape(base)}(:\s*|\s+-\s+|\s*\()({word})\s*\d+(\)?)$", name, re.I)
+                if s:
+                    return f"{base}{s.group(1)}{s.group(2)} {n}{s.group(3)}"
+        return None
 
     def _numbers_from_series_lists(self, books: list[Book]) -> None:
         """A book with no number - or no series at all - that no shop match numbered ('I am Blue, in Pain, and
@@ -421,9 +443,13 @@ class OnlineLookup:
                         break
             return lists[k]
 
+        from .metadata import update_status  # noqa: PLC0415
+        bare = lambda t: re.sub(r"^(the|an?)(?=.)", "", t)  # noqa: E731
         for b in books:
             m = b.meta
-            if m.series_index is not None or not m.title or b.type is BookType.COMIC \
+            guessed = m.series and b.sources.get("series") in GUESSED  # 'Barbecue and God's Blessings' in a
+            # 'Campfire Cooking...' folder: the list confirms it
+            if (m.series_index is not None and not guessed) or not m.title or b.type is BookType.COMIC \
                     or "manual" in (b.sources.get("series"), b.sources.get("series_index")):
                 continue
             if m.series:
@@ -431,15 +457,20 @@ class OnlineLookup:
             else:
                 mine = {fold(a) for a in m.authors}
                 keys = [k for k, (_, asins, who) in known.items() if asins and mine & who][:8]
-            title = re.sub(r"^(the|an?)(?=.)", "", fold(m.title))
+            title = bare(fold(m.title))
             for k in keys:
-                n = next((v for t, v in members(k).items() if re.sub(r"^(the|an?)(?=.)", "", t) == title), None)
-                if n is not None:
-                    if not m.series:
-                        m.series, b.sources["series"] = known[k][0], "audible series list"
-                    m.series_index, b.sources["series_index"] = n, "audible series list"
+                n = next((v for t, v in members(k).items() if bare(t) == title), None)
+                if n is None or (m.series_index is not None and n != m.series_index):
+                    continue
+                if not m.series:
+                    m.series = known[k][0]
+                b.sources["series"] = "audible series list"
+                if m.series_index is None:
+                    m.series_index = n
                     b.notes.append(f"#{n:g} from Audible's list of {m.series}")
-                    break
+                b.sources["series_index"] = "audible series list"
+                update_status(b)
+                break
 
     def fill_narrators(self, book: Book) -> None:
         """No narrator after the lookup (a new release, an incomplete shop page): who reads the other
@@ -813,7 +844,7 @@ def _series_head_vote(books: list[Book]) -> None:
         if b.meta.series and b.author:
             by_author.setdefault(fold(b.author), Counter())[b.meta.series] += 1
     for b in books:
-        if not b.meta.series or not b.author or b.sources.get("series") == "manual":
+        if not b.meta.series or not b.author or b.sources.get("series") in ("manual", OWN_KEPT):
             continue
         names = by_author.get(fold(b.author), Counter())
         mine = b.meta.series
@@ -823,6 +854,66 @@ def _series_head_vote(books: list[Book]) -> None:
         for name, count in kin.items():
             if count > names[mine]:
                 b.meta.series = name
+
+
+_STORE_RE = re.compile(r"(?i)book\W*walker|\byen (?:press|on|audio)\b|j-novel|\bseven seas\b|\bkodansha\b|"
+                       r"\bviz media\b|\bcross infinite\b|\bairship\b|\baudible (?:studios|originals)\b")
+
+
+OWN_KEPT = "own (the shop had no number)"
+
+
+def _own_series_when_unnumbered(books: list[Book], own_series: dict[int, str | None],
+                                own_titles: dict[int, str | None] | None = None) -> None:
+    """'Adachi and Shimamura - Short Stories', Vol. 1 (the folder): Audible files 'Short Stories 2' under plain
+    'Adachi and Shimamura' without a number - the number came from the folder, so the folder's own, more exact
+    series stays (else it would land on the main series' Vol. 1)."""
+    from .consistency import series_key  # noqa: PLC0415
+    for b in books:
+        own, cur = own_series.get(id(b)), b.meta.series
+        src = b.sources.get("series")
+        if not own or not cur or src in (*GUESSED, "manual", None) or b.sources.get("series_index") == src:
+            continue
+        ko, kc = series_key(own), series_key(cur)
+        if ko != kc and ko.startswith(kc) and len(ko) - len(kc) >= 4 and not re.search(r"\d", ko[len(kc):]):
+            b.notes.append(f"series '{own}' kept - the shop's '{cur}' has no number for it")
+            b.meta.series, b.sources["series"] = re.sub(r"\s+-\s+", ": ", own, count=1), OWN_KEPT
+            if own_titles and own_titles.get(id(b)):  # the shop's match was another book of that side series
+                b.meta.title = own_titles[id(b)]
+
+
+def _odd_one_in_folder(books: list[Book]) -> None:
+    """'...v04.6 - Pinup Art Collection [BOOK☆WALKER Exclusive].epub' in a folder of Alya volumes: the store as
+    its author and no series - its title starts with the folder's series, so it takes that author and series,
+    and the number its file name says (v04.6 - the real 4.5 is next to it)."""
+    from .consistency import series_key  # noqa: PLC0415
+    from .metadata import update_status  # noqa: PLC0415
+    from collections import Counter  # noqa: PLC0415
+    by_folder: dict[str, list[Book]] = {}
+    for b in books:
+        by_folder.setdefault(os.path.normcase(str(b.main_file.parent)), []).append(b)
+    for group in by_folder.values():
+        if len(group) < 3:
+            continue
+        pairs = Counter((tuple(b.meta.authors), b.meta.series) for b in group if b.meta.series and b.meta.authors)
+        if not pairs:
+            continue
+        (authors, series), votes = pairs.most_common(1)[0]
+        if votes < len(group) * 2 / 3:
+            continue
+        for b in group:
+            m = b.meta
+            store = bool(m.authors) and all(_STORE_RE.search(a) for a in m.authors)
+            if (m.series and not store) or b.sources.get("authors") == "manual" \
+                    or not series_key(m.title or "").startswith(series_key(series)):
+                continue
+            m.authors, b.sources["authors"] = list(authors), "folder sibling"
+            m.series, b.sources["series"] = series, "folder sibling"
+            num = re.search(r"(?i)\bv(?:ol)?\.?\s*(\d+(?:\.\d+)?)\b", b.main_file.stem)
+            if num:
+                m.series_index, b.sources["series_index"] = float(num.group(1)), "filename"
+            b.notes.append(f"author and series from the other books in its folder ({series})")
+            update_status(b)
 
 
 def _from_folder_sibling(books: list[Book]) -> None:
