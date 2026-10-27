@@ -67,7 +67,29 @@ def duration(path: Path) -> float:
 
 
 # -- chapter names -----------------------------------------------------------
+_EPISODE_RE = re.compile(r"(?i)\bS\d+\s*E(\d+)\b")
+
+
+def episode_chapters(files: list[Path], durations: list[float]) -> list[Chapter] | None:
+    """A season in pieces ('DDC S02E01 - 001.mp3', 'DDC S02E01 - 007Closing Credits.mp3', 'DDC S02E02 - ...'):
+    one chapter per episode, where its first file starts. None unless every file names an episode."""
+    episodes = [_EPISODE_RE.search(f.stem) for f in files]
+    if not all(episodes) or len({int(e.group(1)) for e in episodes}) < 2:
+        return None
+    chapters, t = [], 0.0
+    for e, d in zip(episodes, durations):
+        n = int(e.group(1))
+        if not chapters or chapters[-1].title != f"Episode {n}":
+            chapters.append(Chapter(t, t + d, f"Episode {n}"))
+        else:
+            chapters[-1].end = t + d
+        t += d
+    return chapters
+
+
 def chapters_from_files(files: list[Path], durations: list[float]) -> list[Chapter]:
+    if episodes := episode_chapters(files, durations):
+        return episodes
     names = []
     for f in files:
         title = read_tags(f).get("title")

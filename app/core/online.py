@@ -198,9 +198,12 @@ class OnlineLookup:
 
     def run(self, books: list[Book], on_progress: Callable[[int, int, Book], None] | None = None,
             cancelled: Callable[[], bool] = lambda: False) -> None:
-        todo = [b for b in books if self.wants_lookup(b)]
         from .abs_index import AbsIndex  # noqa: PLC0415
+        from .known_series import apply_known_series  # noqa: PLC0415
         self.abs_index = AbsIndex.load(self.folders, fresh=True)
+        # 'Dungeon Crawler Carl - Season 2 - Audio Immersion Tunnel': no shop sells it, so none is asked
+        known = [b for b in books if apply_known_series(b, self.abs_index)]
+        todo = [b for b in books if self.wants_lookup(b) and b not in known]
         own_series = {id(b): b.meta.series for b in books}  # what the books' own files say, before the shops
         own_titles = {id(b): b.meta.title for b in books}
         for b in books:
@@ -240,6 +243,8 @@ class OnlineLookup:
         _note_mixed_kinds(books)
         _spin_offs_of_light_novels(books)
         _comics_like_their_folder(books)  # last: after the shared-series vote
+        for b in known:  # the votes above don't rename a known production
+            apply_known_series(b, self.abs_index)
         self.rules.apply(books)  # your own fixes win over the shops
         self._series_as_in_abs(books)
         self._numbers_from_series_lists(books)
