@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_every_module_compiles():
-    files = [*ROOT.joinpath("app").rglob("*.py"), ROOT / "booksorter.pyw"]
+    files = [*ROOT.joinpath("app").rglob("*.py"), ROOT / "shelfkeeper.pyw"]
     for f in files:
         py_compile.compile(str(f), doraise=True, cfile=str(Path(py_compile.importlib.util.cache_from_source(str(f)))))
     assert len(files) > 30

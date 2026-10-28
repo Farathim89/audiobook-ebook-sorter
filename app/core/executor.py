@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from mutagen import MutagenError
+
 from ..config import Folders
 from ..providers.http import Cache, Http
 from . import m4b
@@ -150,6 +152,7 @@ class Executor:
             return BookResult(book, "skipped", "; ".join(problems))
         if book.status is Status.UNKNOWN:
             return BookResult(book, "skipped", "unknown book")
+        journal.begin_book()
         try:
             target = plan.targets[book]
             self._step("reading covers and metadata")
@@ -239,13 +242,16 @@ class Executor:
                 if self.mode == "move":
                     self._step("moving the originals' leftovers to Done")
                     self._tidy_source(book, journal, replaced)
+            journal.end_book()
             self.processed.add(book)
             if self._notes:
                 detail += " - " + "; ".join(self._notes)
             return BookResult(book, status, detail)
-        except OSError as e:
+        except (OSError, MutagenError) as e:  # MutagenError: a locked / damaged audio file while tagging
             log.error("failed on %s: %s", book.main_file, e)
-            return BookResult(book, "failed", str(e))
+            left = journal.rollback_book()  # never half in Sorted, half in Incoming: the book is put back
+            note = " - put back as it was" if not left else f" - {len(left)} step(s) could not be put back"
+            return BookResult(book, "failed", str(e) + note)
 
     @property
     def http(self) -> Http:
@@ -339,16 +345,19 @@ class Executor:
             journal.write(op="move", src=str(src), dst=str(dst), size=size)
             return
         tmp = dst.with_name(dst.name + ".partial")
-        shutil.copy2(src, tmp)
-        if tmp.stat().st_size != size:
-            tmp.unlink()
-            raise OSError(f"copy is incomplete: {src}")
-        os.rename(tmp, dst)
+        try:
+            shutil.copy2(src, tmp)
+            if tmp.stat().st_size != size:
+                raise OSError(f"copy is incomplete: {src}")
+            os.rename(tmp, dst)
+        except BaseException:
+            tmp.unlink(missing_ok=True)  # never a half copy left behind (disk full, cancelled)
+            raise
+        # journaled before the original goes: if it can't be removed, undo still takes the copy back
+        journal.write(op="copy", src=str(src), dst=str(dst), size=size)
         if self.mode == "move":
-            os.remove(src)
+            os.remove(src)  # (undo: the 'move' below puts the file back first, then the 'copy' finds nothing)
             journal.write(op="move", src=str(src), dst=str(dst), size=size)
-        else:
-            journal.write(op="copy", src=str(src), dst=str(dst), size=size)
 
     def _embed_cover(self, book: Book, moves: list[Move], m4b_file: Path | None, image: bytes,
                      journal: Journal) -> None:
@@ -361,7 +370,7 @@ class Executor:
             try:
                 if m4b.embed_cover_if_bigger(f, image):
                     journal.write(op="update", dst=str(f), size=f.stat().st_size)
-            except OSError as e:
+            except (OSError, MutagenError) as e:
                 log.warning("could not put the cover into %s: %s", f, e)
 
     def _tidy_source(self, book: Book, journal: Journal, replaced: set[Path] = frozenset()) -> None:

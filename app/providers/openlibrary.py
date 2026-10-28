@@ -25,8 +25,11 @@ class OpenLibrary:
 
     def _candidate(self, d: dict) -> Candidate:
         isbns = d.get("isbn") or []
-        isbn = next((i for i in isbns if len(i) == 13), isbns[0] if isbns else None)
         langs = d.get("language") or []
+        # a work lists the ISBNs of all its editions (translations too): only one edition's (its ISBN-10 /
+        # ISBN-13 pair) is surely this book's - else none, so no foreign ISBN / cover is taken from it
+        isbn = next((i for i in isbns if len(i) == 13), isbns[0] if isbns else None) \
+            if len(isbns) <= 2 and len(langs) <= 1 else None
         meta = Metadata(
             title=clean_title(d.get("title")),
             authors=[a for name in (d.get("author_name") or [])[:3] for a in split_people(name)],

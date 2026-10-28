@@ -89,6 +89,17 @@ before the original leaves Incoming - <i>Full</i> (the whole file, about 20 s pe
 middle, end). A new file that fails is removed and the original is sorted as it is; the result says why.</li>
 <li><b>Edit &gt; Mark selected as already sorted</b> (Ctrl+M): hide books your library already has.</li>
 </ul>
+<h3>Your library (left menu, LIBRARY)</h3>
+<ul>
+<li><b>Collection</b>: every series you have, read from Audiobookshelf - per kind (🎧 audiobook, 📖 light novel,
+🗯 manga, 📘 ebook) how many you <i>have</i> and how many are missing (<i>✗</i>, red), plus what's coming soon and a
+release calendar. <b>Check online</b> asks Audible, AniList and Google Books what each series has. This is the
+former Book Collection Checker: on first use it takes over its settings and saved lookups.</li>
+<li><b>Authors</b>: type an author (it suggests the ones in your library) and press <b>Look up</b> - every series and
+book Audible, AniList, Google Books and OpenLibrary know, with what you have of each. A number in yellow: it exists,
+you have none of it. Select a row for its volumes, release dates and links.</li>
+<li><b>More by &lt;author&gt;</b>: right-click a book (here) or a series (Collection) to open Authors for its author.</li>
+</ul>
 <h3>Smarter sorting</h3>
 <ul>
 <li><b>Rules from your edits</b>: fix a book once (Save changes, or Tools &gt; Edit a sorted book) and the app
@@ -101,7 +112,7 @@ ollama.com and run <i>ollama pull qwen2.5:14b</i>); <i>Cloud</i> uses Claude wit
 must appear there, and a sure answer is used right away - the rest wait in the book's panel for <b>Accept</b>.</li>
 </ul>
 <h3>Portable</h3>
-<p>Put a folder named <b>BookSorter-data</b> next to BookSorter.exe and everything the app saves - settings, history (undo), cache, ffmpeg and the window layout - stays in there, not in your user profile or the registry. Copy the two together to a USB stick or another PC. Delete the folder to go back to normal mode.</p>
+<p>Put a folder named <b>Shelfkeeper-data</b> next to Shelfkeeper.exe and everything the app saves - settings, history (undo), cache, ffmpeg and the window layout - stays in there, not in your user profile or the registry. Copy the two together to a USB stick or another PC. Delete the folder to go back to normal mode.</p>
 <ul>
 </ul>
 """
@@ -110,7 +121,7 @@ must appear there, and a sure answer is used right away - the rest wait in the b
 class HelpDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("How to use Book Sorter")
+        self.setWindowTitle("How to use Shelfkeeper")
         self.resize(760, 560)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()

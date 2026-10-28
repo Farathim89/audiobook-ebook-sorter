@@ -43,13 +43,18 @@ def update_abs(folders: Folders, client: AbsClient, on_progress: Callable[[str],
             on_progress(f"Scanning {name} ({waited // 60}:{waited % 60:02d})")
         lines.append(f"Scanned {name}" + ("" if waited < SCAN_TIMEOUT else " - still busy, not waiting longer"))
     on_progress("Finding moved books")
-    steps = [s for s in plan_restore(client, backup) if s.action == "set" and s.how != "same item"]
+    planned = plan_restore(client, backup)
+    steps = [s for s in planned if s.action == "set" and s.how != "same item"]
+    lost = [s for s in planned if s.action == "skip"]  # its book was not found once (0 or 2+ matches)
     if steps:
         before_restore, done = apply_restore(folders, client, steps)
         lines.append(f"Progress moved to the new entry of {done} books (as it was before: {before_restore}):")
         lines += [f"    {s.title} [{s.library}] - {s.state} (by {s.how})" for s in steps]
-    else:
+    elif not lost:
         lines.append("No progress had to be moved.")
+    if lost:
+        lines.append(f"Progress NOT moved for {len(lost)} books - set it by hand (it is in {backup.name}):")
+        lines += [f"    {s.title} - {s.state} ({s.how})" for s in lost]
     on_progress("Checking the libraries")
     lines += ["", report(*check_abs(client, on_progress))]
     return "\n".join(lines)

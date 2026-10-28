@@ -15,7 +15,7 @@ class AbsClient:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(f"{self.url}/api{path}", data=data, method=method, headers={
             "Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json",
-            "User-Agent": "BookSorter/1.0"})
+            "User-Agent": "Shelfkeeper/0.4"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             raw = resp.read()
         try:

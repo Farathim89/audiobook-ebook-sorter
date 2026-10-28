@@ -59,6 +59,7 @@ class BookModel(QAbstractTableModel):
     # -- loading -----------------------------------------------------------
     def set_books(self, books: list[Book], plan: Plan, done: set[Book]) -> None:
         self.beginResetModel()
+        self.__dict__.pop("_library_cache", None)  # new books: no status of an old book under a reused id
         self.books, self.plan, self.done = books, plan, done
         self.skipped = set()
         self.checked = {b for b in books if self.default_checked(b)}
@@ -175,7 +176,9 @@ class BookModel(QAbstractTableModel):
         index = getattr(self.plan, "abs_index", None) if self.plan else None
         if index is None:
             return ""
-        key = id(book)
+        m = book.meta  # what the status depends on: an edit or a new lookup gives a new key
+        key = (id(book), book.main_file, book.type, m.title, m.series, m.series_index, tuple(m.authors),
+               m.asin, m.language)
         cache = self.__dict__.setdefault("_library_cache", {})
         if cache.get("index") is not index:
             cache.clear()

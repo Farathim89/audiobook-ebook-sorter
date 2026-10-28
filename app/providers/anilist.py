@@ -56,6 +56,10 @@ class AniList:
             if not author:
                 continue
             if exact:
+                staff = [((e.get("node") or {}).get("name") or {}).get("full") or ""
+                         for e in ((media.get("staff") or {}).get("edges") or [])]
+                if authors and not any(_same_person(s, authors) for s in [author, *staff] if s):
+                    continue  # the same name by someone else ('Monster' by Jane Doe is not Urasawa's manga)
                 return self._candidate(media, author, series, exact=True)
             main_matches.append((media, author))
         if authors:  # only the main title matches: the author must be the same

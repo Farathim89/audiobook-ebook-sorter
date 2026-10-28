@@ -52,7 +52,9 @@ def title_score(want: str | None, cand: Candidate) -> float:
         # our tag 'All the Dust That Falls Two: An Isekai LitRPG Adventure' = the shop's title + subtitle
         scores.append(_ratio(w, norm_title(f"{title}: {subtitle}")))
     if ":" in title:  # "7th Time Loop: The Villainess Enjoys..., Vol. 1" is "7th Time Loop"
-        scores.append(min(_ratio(w, norm_title(title.split(":", 1)[0])), AUTO_TITLE))
+        # sure only for a numbered volume of a long series name - 'Mistborn' is not 'Mistborn: Secret History'
+        cap = AUTO_TITLE if _TITLE_VOLUME_RE.search(title) else AUTO_TITLE - 0.02
+        scores.append(min(_ratio(w, norm_title(title.split(":", 1)[0])), cap))
     if cand.meta.series:
         scores.append(_ratio(w, norm_title(f"{cand.meta.series} {title}")) * 0.95)
     return max(scores)

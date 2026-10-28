@@ -1,7 +1,7 @@
-"""Entry point for the packaged BookSorter.exe.
+"""Entry point for the packaged Shelfkeeper.exe.
 
-    BookSorter.exe                 the window
-    BookSorter.exe --auto [...]    any CLI command without a window (e.g. from Task Scheduler);
+    Shelfkeeper.exe                 the window
+    Shelfkeeper.exe --auto [...]    any CLI command without a window (e.g. from Task Scheduler);
                                    output goes to <app data>\\logs\\cli-<date>.log
 """
 import sys

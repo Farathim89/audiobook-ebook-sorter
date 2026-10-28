@@ -1,2 +1,2 @@
-"""AudioBooks & EBook Sorter."""
-__version__ = "0.3.11"  # bump with every GitHub release
+"""Shelfkeeper - sorts your audiobooks, ebooks and manga, and keeps track of what your library is missing."""
+__version__ = "1.0.0"  # bump with every GitHub release

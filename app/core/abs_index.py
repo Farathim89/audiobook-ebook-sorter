@@ -27,12 +27,22 @@ def split_series(value: str) -> list[str]:
     out, cur = [], ""
     for piece in (value or "").split(", "):
         cur = f"{cur}, {piece}" if cur else piece
-        if re.search(r"#\s*[\d.]+$", cur):
+        if re.search(r"#\s*[\d.]+(?:\s*[-–]\s*[\d.]+)?$", cur):  # also a range: '... #01–07'
             out.append(cur.strip())
             cur = ""
     if cur.strip():
         out.append(cur.strip())
     return out
+
+
+_PART_RE = re.compile(r"^(.*?)\s*#\s*([\d.]+)(?:\s*[-–]\s*([\d.]+))?$")
+
+
+def parse_series_part(part: str) -> tuple[str, float | None]:
+    """'Solo Leveling #2' -> ('Solo Leveling', 2.0); a box set 'Musashi: An Epic Novel... #01–07' -> (name, 1.0),
+    the range start; no number -> (part, None)."""
+    m = _PART_RE.match(part)
+    return (m.group(1), float(m.group(2))) if m else (part, None)
 
 
 def _skey(name: str) -> str:
@@ -114,8 +124,7 @@ class AbsIndex:
                     md = media.get("metadata") or {}
                     series = []
                     for part in split_series(md.get("seriesName") or ""):
-                        m = re.match(r"^(.*?)\s*#\s*([\d.]+)$", part)
-                        series.append((m.group(1), float(m.group(2))) if m else (part, None))
+                        series.append(parse_series_part(part))
                     index.books.append(AbsBook(
                         it["id"], lib.get("name") or "", it.get("path") or "", md.get("title") or "",
                         [a.strip() for a in (md.get("authorName") or "").split(",") if a.strip()],

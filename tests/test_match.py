@@ -335,3 +335,8 @@ def test_another_edition_is_not_applied(monkeypatch, tmp_path):
     book.sources["narrators"] = "label"
     assert not any(c.confident for c in lk._audible(book))
     assert book.meta.asin is None and any("another edition" in n for n in book.notes)
+
+
+def test_a_title_before_the_colon_is_only_sure_for_a_numbered_volume():
+    book = _book(title="Mistborn", authors=["Brandon Sanderson"])
+    assert not rank(book, [_cand(title="Mistborn: Secret History", authors=["Brandon Sanderson"])])[0].confident

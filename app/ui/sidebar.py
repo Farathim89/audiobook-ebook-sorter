@@ -89,7 +89,7 @@ class SegmentedSwitch(QWidget):
 
 class Sidebar(QFrame):
     filter_chosen = Signal(str)   # 'all', 'ready', 'check', ...
-    page_chosen = Signal(str)     # 'books', 'tools', 'history', 'settings'
+    page_chosen = Signal(str)     # 'books', 'collection', 'tools', 'history', 'settings'
 
     def __init__(self, filters: list[tuple[str, str]], parent=None):
         super().__init__(parent)
@@ -104,7 +104,7 @@ class Sidebar(QFrame):
         b = QVBoxLayout(brand)
         b.setContentsMargins(16, 9, 16, 6)
         b.setSpacing(0)
-        title = QLabel("BOOK SORTER")
+        title = QLabel("SHELFKEEPER")
         title.setObjectName("brandtitle")
         sub = QLabel("audiobooks · ebooks · manga")
         sub.setObjectName("brandsub")
@@ -166,6 +166,20 @@ class Sidebar(QFrame):
             self._filters.addButton(btn)
             self.filter_buttons[key] = btn
             self.v.addWidget(btn)
+
+        # -- your library: what you have and what's missing (the former Book Collection Checker) --
+        self._group("LIBRARY")
+        self.b_collection = NavButton("📚   Collection")
+        self.b_collection.setToolTip("Your series: what you have, what's missing and what's coming")
+        self.b_collection.clicked.connect(lambda: self._pick_page("collection"))
+        self._filters.addButton(self.b_collection)
+        self.v.addWidget(self.b_collection)
+        self.b_authors = NavButton("👤   Authors")
+        self.b_authors.setToolTip("Everything an author wrote - audiobooks, light novels, manga, ebooks - "
+                                  "next to what you have")
+        self.b_authors.clicked.connect(lambda: self._pick_page("authors"))
+        self._filters.addButton(self.b_authors)
+        self.v.addWidget(self.b_authors)
 
         # -- pages / more --
         self._group("MORE")

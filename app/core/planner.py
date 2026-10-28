@@ -119,6 +119,15 @@ def _folder_title(book: Book, shared_head: bool = True) -> str:
     return title
 
 
+_VOL_TITLE_RE = re.compile(r"(?i)(?:vol(?:ume)?\.?|book|part)\s*\d")
+
+
+def _plain_series(series: str) -> str:
+    """The series as a title would say it: no '(Manga)' tag, ' - ' read as ':' (a folder's spelling)."""
+    series = re.sub(r"(?i)\s*\((?:manga|comic|light novel)\)$", "", series or "")
+    return series.replace(" - ", ": ", 1) if " - " in series and ":" not in series else series
+
+
 def _word_number_after(title: str, series: str) -> int | None:
     """'All the Dust That Falls Two' with series 'All the Dust That Falls' -> 2 (a number word right after
     the whole series name, and nothing else)."""
@@ -171,6 +180,7 @@ class Planner:
         self.folders = folders
         self.allow_protected = allow_protected
         self._batch_series: dict[str, set[str]] = {}  # author -> the series names in this sort
+        self._batch: list[Book] = []  # the books of this sort
         self._on_disk: dict[str, set[str]] = {}
         self._abs = None  # what your Audiobookshelf has (core.abs_index), read on first need
 
@@ -208,6 +218,7 @@ class Planner:
     def plan(self, books: list[Book]) -> Plan:
         plan = Plan()
         self._batch_series = {}
+        self._batch = list(books)
         for book in books:
             if book.meta.series and book.author:
                 self._batch_series.setdefault(fold(book.author), set()).add(book.meta.series)
@@ -275,6 +286,11 @@ class Planner:
                 # ('..., Vol. 11' is a folder - its '. 11' is no file extension)
                 if fold(folder.parent.parent.name) == me:  # Author\Series\Book: the middle one is the series folder
                     names[folder.parent.name] += 1
+        from difflib import SequenceMatcher  # noqa: PLC0415
+        # never a cut-off name: 'Is It Wrong to Try to Pick Up Girls in a' for '... Dungeon On the Side - Sword
+        # Oratoria' (an old sort's mistake) - a new volume goes to the proper folder, not that one
+        names = Counter({n: c for n, c in names.items()
+                         if _skey(n) == key or SequenceMatcher(None, _skey(n), key).ratio() >= 0.85})
         return names.most_common(1)[0][0] if names else None
 
     def library_root(self, book: Book) -> Path:
@@ -313,8 +329,29 @@ class Planner:
         m = book.meta
         title = folder_title(book, self.shared_head(book))
         if m.series and m.series_index is not None:
+            if fold(m.title or "") == fold(_plain_series(m.series)) and not self._volumes_named_vol(book):
+                # 'Dungeon Crawler Carl' #1 next to 'Carl's Doomsday Scenario' #2 (or a series of one: 'Your Name.'):
+                # its own title - ', Vol. 1' only where the other volumes are '..., Vol. N'
+                title = with_edition(m.title, book)
             return f"{series_number(book)} - {title}"  # a box set: '1-4 - Hell's Rejects, Books 1-4'
         return title
+
+    def _volumes_named_vol(self, book: Book) -> bool:
+        """Are the series' other volumes (in this sort or your library) called '..., Vol. N'?"""
+        from .abs_index import _skey  # noqa: PLC0415
+        key, me = _skey(book.meta.series or ""), fold(book.author or "")
+        titles = [b.meta.title for b in self._batch if b is not book and b.meta.series and _skey(b.meta.series) == key]
+        if self._abs is None:
+            from .abs_index import AbsIndex  # noqa: PLC0415
+            self._abs = AbsIndex.load(self.folders)
+        for a in self._abs.books:
+            if not a.missing and me in {fold(x) for x in a.authors} and any(_skey(n) == key for n, _ in a.series) \
+                    and fold(a.title) != fold(book.meta.title or ""):
+                titles += [a.title, re.split(r"[\\/]", a.path.rstrip("\\/"))[-1]]  # its folder: '2 - ..., Vol. 2'
+        series = _plain_series(book.meta.series or "")
+        # '..., Vol. 2' / 'All the Dust that Falls 3' / 'All the Dust That Falls Two': numbered volumes
+        return any(_VOL_TITLE_RE.search(t or "") or _word_number_after(t or "", series) is not None
+                   or re.match(re.escape(series) + r"\W*\d+\s*$", t or "", re.I) for t in titles)
 
     def _review_target(self, book: Book) -> Path:
         if book.type is BookType.AUDIO and book.folder:
@@ -433,6 +470,10 @@ class Planner:
                 plan.add_problem(mv.book, "path longer than 260 characters")
             if not self.allow_protected and any(_is_within(mv.dst, p) for p in self.folders.protected):
                 plan.add_problem(mv.book, "target is inside an Audiobookshelf library folder (protected)")
+            if not self.allow_protected and any(_is_within(mv.src, p) for p in self.folders.protected):
+                # Incoming (or an extra source) inside a library: Move would take the library's own files
+                plan.add_problem(mv.book, "this book is inside an Audiobookshelf library folder (protected) - "
+                                          "not sorted from there")
 
 
     @staticmethod

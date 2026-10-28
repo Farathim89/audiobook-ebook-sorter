@@ -73,8 +73,13 @@ class Rules:
         add = lambda **kw: new.append(Rule(made=today, book=title, run_id=run_id, **kw))  # noqa: E731
         old_a, new_a = list(before.authors), list(after.authors)
         if old_a and new_a and old_a != new_a:
-            if len(old_a) == len(new_a):
-                pairs = [(o, n) for o, n in zip(old_a, new_a) if fold(o) != fold(n) or o != n]
+            if {fold(a) for a in old_a} == {fold(a) for a in new_a} and \
+                    {a for a in old_a} == {a for a in new_a}:
+                pairs = []  # only the order changed ('Shiba, Morita' -> 'Morita, Shiba'): nobody is renamed
+            elif len(old_a) == len(new_a):
+                # a name that is still in the list somewhere is not renamed (a swap plus one fix)
+                pairs = [(o, n) for o, n in zip(old_a, new_a)
+                         if (fold(o) != fold(n) or o != n) and o not in new_a and n not in old_a]
             else:  # 'Mike Langwiser - translator Hayaken' -> 'Hayaken': the first name stands for the book
                 pairs = [(old_a[0], new_a[0])] if old_a[0] != new_a[0] else []
             for o, n in pairs:

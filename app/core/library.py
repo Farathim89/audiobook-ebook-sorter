@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import time
 from xml.sax.saxutils import escape as xml_escape
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -493,11 +494,14 @@ def move_duplicates(folders: Folders, moves: list, cancelled: Callable[[], bool]
             book = mv.book
             if on_progress:
                 on_progress(i, len(moves), book.meta.title or book.main_file.name)
-            if mv.library is not None and not folders.is_protected(mv.library):
-                # (a copy in your protected library - found through Audiobookshelf - is only read, never filled)
-                _fill_library_copy(ed, mv.library, book)
-            _move_out(ed, book, folders.duplicates)
-            done += 1
+            try:
+                if mv.library is not None and not folders.is_protected(mv.library):
+                    # (a copy in your protected library - found through Audiobookshelf - is only read)
+                    _fill_library_copy(ed, mv.library, book)
+                _move_out(ed, book, folders.duplicates)
+                done += 1
+            except OSError as e:  # one locked / clashing book: the others still go
+                log.warning("duplicate not moved: %s (%s)", book.main_file, e)
         return ed.run_id, done
 
 
@@ -505,6 +509,13 @@ def _move_out(ed: LibraryEditor, book: Book, dest_base: Path) -> None:
     """Move a book out of Incoming into dest_base\\<incoming folder name>\\..., keeping its folders,
     with what it leaves behind (cover.jpg, metadata.json...); empty folders are removed."""
     dest_root = dest_base / book.source_root.name
+    first = dest_root / (book.folder or book.main_file).relative_to(book.source_root)
+    if first.exists():  # the same download name came twice: a dated folder, never a clash
+        stamp, n = time.strftime("%Y%m%d-%H%M%S"), 1
+        dest_root = dest_base / f"{book.source_root.name} {stamp}"
+        while (dest_root / (book.folder or book.main_file).relative_to(book.source_root)).exists():
+            n += 1
+            dest_root = dest_base / f"{book.source_root.name} {stamp}-{n}"
     if book.folder is not None:
         ed.move_tree(book.folder, dest_root / book.folder.relative_to(book.source_root))
         drop_empty_parents(book.folder.parent, book.source_root)
@@ -707,6 +718,15 @@ def edit_sorted_book(folders: Folders, folder: Path, values: dict) -> tuple[str,
             for parent in (folder.parent, folder.parent.parent):  # old author / series folders
                 if parent != root and root in parent.parents:
                     remove_empty_dirs(parent)
+        # 'goji' -> 'Goji': Windows keeps an existing folder's case, so the author / series folders above the
+        # book are renamed too when only their case differs
+        for level in [p for p in reversed(new_dir.parents) if root in p.parents]:
+            try:
+                actual = next((d for d in level.parent.iterdir() if d.name.casefold() == level.name.casefold()), None)
+            except OSError:
+                actual = None
+            if actual is not None and actual.name != level.name:
+                ed.rename(actual, level)
         files = [new_dir / f.relative_to(folder) for f in book.files]
         if book.type is not BookType.AUDIO and old_title and m.title:
             # a sorted ebook's file is named after its title: follow the new title

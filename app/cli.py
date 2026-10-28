@@ -36,7 +36,7 @@ from .core.planner import Plan, Planner
 
 def main(argv: list[str] | None = None) -> int:
     folders = load_folders()
-    ap = argparse.ArgumentParser(prog="booksorter")
+    ap = argparse.ArgumentParser(prog="shelfkeeper")
     ap.add_argument("sources", nargs="*", type=Path,
                     help="folders to scan (default: the audiobook and book Incoming folders)")
     ap.add_argument("--audio-out", type=Path, default=folders.audio_sorted)

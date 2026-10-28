@@ -13,6 +13,7 @@ Accept. Answers are cached, so a second scan asks nothing.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import re
 import logging
@@ -95,6 +96,8 @@ def _post(url: str, body: dict, headers: dict, timeout: float) -> dict:
         raise OSError(f"{e.code} {e.reason}: {detail}") from e
     except urllib.error.URLError as e:
         raise OSError(str(e.reason)) from e
+    except (ValueError, http.client.HTTPException) as e:  # not JSON / cut off: no answer, not a crash
+        raise OSError(f"bad answer from the AI ({type(e).__name__})") from e
 
 
 class OllamaClient:
@@ -108,7 +111,13 @@ class OllamaClient:
             "model": self.model, "stream": False, "format": SCHEMA, "options": {"temperature": 0},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }, {}, timeout=300)  # the first call loads the model into the GPU
-        return json.loads(data["message"]["content"]), 0.0
+        try:
+            answer = json.loads(data["message"]["content"])
+        except (KeyError, TypeError, ValueError) as e:  # an odd reply is no answer, not a crash of the lookup
+            raise OSError(f"Ollama gave no usable answer ({type(e).__name__})") from e
+        if not isinstance(answer, dict):
+            raise OSError("Ollama gave no usable answer")
+        return answer, 0.0
 
     def test(self) -> str:
         req = urllib.request.Request(f"{self.url}/api/tags")
@@ -172,6 +181,7 @@ class AiHelper:
             on_progress: Callable[[int, int, Book], None] | None = None) -> int:
         todo = [b for b in books if self.wanted(b)]
         used = 0
+        self.failed = ""  # each lookup tries again (Ollama may have started meanwhile)
         for i, book in enumerate(todo, 1):
             if cancelled() or self.failed:
                 break
@@ -288,12 +298,23 @@ def _name_key(name: str) -> str:
     return fold(single_name(name))
 
 
+def _words(text: str) -> str:
+    """' kumo kagyu ' - words between spaces, so a name only counts as a whole name, not as letters that
+    happen to run together across two fields."""
+    return " " + " ".join(re.sub(r"[\W_]+", " ", text.casefold()).split()) + " "
+
+
+def _in_evidence(name: str, words: str) -> bool:
+    from ..readers.names import single_name  # noqa: PLC0415
+    return any(_words(n).strip() and _words(n) in words for n in {name, single_name(name)})
+
+
 def check_answer(book: Book, answer: dict, evidence: str) -> dict:
     """Keep the AI honest: a person must appear in the evidence; a kind must suit the file type."""
     a = dict(answer or {})
-    seen = fold(evidence)
+    words = _words(evidence)
     authors = [str(x).strip() for x in a.get("authors") or [] if str(x).strip()]
-    unknown = [x for x in authors if _name_key(x) not in seen and fold(x) not in seen]
+    unknown = [x for x in authors if not _in_evidence(x, words)]
     if not authors:
         a["rejected"] = "no author"
     elif unknown:
@@ -302,8 +323,8 @@ def check_answer(book: Book, answer: dict, evidence: str) -> dict:
         mine = {_name_key(x) for x in book.meta.authors}
         authors = authors[:1] + [x for x in authors[1:] if _name_key(x) in mine]
     a["authors"] = authors
-    a["narrators"] =[str(x).strip() for x in a.get("narrators") or []
-                      if str(x).strip() and (_name_key(str(x)) in seen or fold(str(x)) in seen)]
+    a["narrators"] = [str(x).strip() for x in a.get("narrators") or []
+                      if str(x).strip() and _in_evidence(str(x), words)]
     # a shop's placeholder is nobody: 'Narrator Info Added Soon'
     a["narrators"] = [n for n in a["narrators"] if not re.search(r"(?i)\b(?:info|added|soon|unknown|tba|n/a)\b", n)]
     if book.type is not BookType.AUDIO:

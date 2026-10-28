@@ -82,6 +82,11 @@ class RestoreStep:
     progress: dict = field(default_factory=dict)
 
 
+def _is_ebook_progress(p: dict) -> bool:
+    """Reading progress of an ebook (a page / location), not a listening position."""
+    return bool(p.get("ebookLocation") or p.get("ebookProgress")) and not p.get("currentTime")
+
+
 def plan_restore(client: AbsClient, backup: Path) -> list[RestoreStep]:
     data = json.loads(backup.read_text(encoding="utf-8"))
     _, items = library_items(client)
@@ -94,11 +99,14 @@ def plan_restore(client: AbsClient, backup: Path) -> list[RestoreStep]:
         state = ("finished" if p.get("isFinished")
                  else f"{(p.get('progress') or 0):.0%} ({(p.get('currentTime') or 0) / 3600:.1f} h)")
         found, how = [i for i in live if old.get("id") and i["id"] == old["id"]], "same item"
+        # by ASIN / title only the same kind: an audiobook's listening position never lands on the ebook
+        ebook = _is_ebook_progress(p)
+        same_kind = [i for i in live if (not i["duration"]) == ebook]
         if not found and old.get("asin"):
-            found, how = [i for i in live if i["asin"] and i["asin"].upper() == old["asin"].upper()], "ASIN"
+            found, how = [i for i in same_kind if i["asin"] and i["asin"].upper() == old["asin"].upper()], "ASIN"
         if not found:
             mine = {fold(a) for a in _names(old.get("authors"))}
-            found = [i for i in live if fold(i["title"]) == fold(title)
+            found = [i for i in same_kind if fold(i["title"]) == fold(title)
                      and (not mine or mine & {fold(a) for a in i["authors"]})]
             how = "title + author"
         if len(found) != 1:
@@ -126,7 +134,8 @@ def apply_restore(folders: Folders, client: AbsClient, steps: list[RestoreStep])
         body = {"isFinished": bool(p.get("isFinished")), "currentTime": p.get("currentTime") or 0,
                 "duration": s.duration or p.get("duration") or 0, "progress": p.get("progress") or 0,
                 "hideFromContinueListening": bool(p.get("hideFromContinueListening"))}
-        body.update({k: p[k] for k in ("startedAt", "finishedAt", "lastUpdate") if p.get(k)})
+        body.update({k: p[k] for k in ("startedAt", "finishedAt", "lastUpdate", "ebookLocation", "ebookProgress")
+                     if p.get(k)})  # an ebook's page too
         client.set_progress(s.item_id, body)
         done += 1
     return before, done

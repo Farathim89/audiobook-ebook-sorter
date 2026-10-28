@@ -53,6 +53,9 @@ def recycle_bin_on(path: Path) -> bool:
     import ctypes  # noqa: PLC0415
     import winreg  # noqa: PLC0415
     root = str(path.resolve().anchor)  # 'H:\\'
+    DRIVE_FIXED = 3
+    if ctypes.windll.kernel32.GetDriveTypeW(root) != DRIVE_FIXED:
+        return False  # network shares, USB sticks: no Recycle Bin - 'to the Recycle Bin' would delete for good
     buf = ctypes.create_unicode_buffer(64)
     key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket"
     if ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(root, buf, len(buf)):

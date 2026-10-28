@@ -1,7 +1,7 @@
 """Finding (and, when asked, downloading) ffmpeg / ffprobe.
 
-Looked for, in order: a ffmpeg\\ folder next to BookSorter.exe (or the project), the app's own
-download folder (%LOCALAPPDATA%\\BookSorter\\ffmpeg), then the PATH.
+Looked for, in order: a ffmpeg\\ folder next to Shelfkeeper.exe (or the project), the app's own
+download folder (%LOCALAPPDATA%\\Shelfkeeper\\ffmpeg), then the PATH.
 """
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Callable
 
 FFMPEG_ZIP = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-from ..portable import PORTABLE
+from ..portable import PORTABLE, profile_dir
 TOOLS_DIR = (PORTABLE / "ffmpeg" if PORTABLE is not None
-             else Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "BookSorter" / "ffmpeg")
+             else profile_dir("LOCALAPPDATA") / "ffmpeg")
 _HERE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
 
 
@@ -35,7 +35,7 @@ def download_ffmpeg(on_progress: Callable[[int, int], None] | None = None,
                     cancelled: Callable[[], bool] = lambda: False) -> Path:
     """Download the ffmpeg 'essentials' build (gyan.dev), check its SHA-256, keep ffmpeg.exe,
     ffprobe.exe and the licence in TOOLS_DIR. Returns TOOLS_DIR."""
-    headers = {"User-Agent": "BookSorter/0.1"}
+    headers = {"User-Agent": "Shelfkeeper/0.4"}
     with urllib.request.urlopen(urllib.request.Request(FFMPEG_ZIP + ".sha256", headers=headers), timeout=30) as r:
         expected = r.read().decode("ascii", "replace").split()[0].strip().lower()
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)

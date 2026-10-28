@@ -1,6 +1,7 @@
 """Tiny cached JSON-over-HTTP client (stdlib only)."""
 from __future__ import annotations
 
+import http.client
 import json
 import sqlite3
 import threading
@@ -9,14 +10,15 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-USER_AGENT = "BookSorter/0.1 (+personal library tool)"
+USER_AGENT = "Shelfkeeper/0.4 (+personal library tool)"
 CACHE_DAYS = 30
 
 
 class Cache:
-    """URL -> JSON response, kept for CACHE_DAYS. Failed requests are never cached."""
+    """URL -> JSON response, kept for `days` (CACHE_DAYS). Failed requests are never cached."""
 
-    def __init__(self, path: Path | None):
+    def __init__(self, path: Path | None, days: float = CACHE_DAYS):
+        self.days = days  # the Collection page: 7 (release dates change)
         self._lock = threading.Lock()
         if path is None:
             self._db = sqlite3.connect(":memory:", check_same_thread=False)
@@ -28,7 +30,7 @@ class Cache:
     def get(self, key: str):
         with self._lock:
             row = self._db.execute("SELECT value, created FROM cache WHERE key = ?", (key,)).fetchone()
-        if row and time.time() - row[1] < CACHE_DAYS * 86400:
+        if row and time.time() - row[1] < self.days * 86400:
             return json.loads(row[0])
         return None
 
@@ -45,9 +47,12 @@ class Http:
         self._lock = threading.Lock()
 
     def get_json(self, url: str, params: dict | None = None):
+        key = url
         if params:
+            # the cache never holds an API key ('key' = Google Books): it would sit in cache.sqlite on disk
+            key = f"{url}?{urllib.parse.urlencode({k: v for k, v in params.items() if k != 'key'})}"
             url = f"{url}?{urllib.parse.urlencode(params)}"
-        return self._fetch(url, url, None)
+        return self._fetch(key, url, None)
 
     def post_json(self, url: str, payload: dict):
         body = json.dumps(payload, sort_keys=True)
@@ -67,6 +72,9 @@ class Http:
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
+            except (ValueError, http.client.HTTPException) as e:
+                # not JSON / cut off mid-answer: the same as no answer for every caller (they catch OSError)
+                raise OSError(f"bad answer from {urllib.parse.urlsplit(url).netloc}: {type(e).__name__}") from e
             finally:
                 self._last = time.monotonic()
         self.cache.put(key, data)

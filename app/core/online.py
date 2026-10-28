@@ -113,6 +113,14 @@ def _doubled_pen_names(books: list[Book], own_singles: set[str] = frozenset()) -
             update_status(b)
 
 
+ANILIST_DOWN = "AniList didn't answer - light novel or not is unchecked (Look up again later)"
+
+
+def _note_once(book: Book, note: str) -> None:
+    if note not in book.notes:
+        book.notes.append(note)
+
+
 def _close_to(name: str, names: set[str]) -> bool:
     """'eiichirooda' ~ 'eiichirouoda' (same rule as consistency.unify_names)."""
     from difflib import SequenceMatcher  # noqa: PLC0415
@@ -365,6 +373,12 @@ class OnlineLookup:
             book.doubt = f"{c.provider.capitalize()} lists this title by {c.meta.authors[0]} - check the author"
         update_status(book)
 
+    def _language_of(self, book: Book) -> str:
+        """The language a match must be in: the book's own, else Swedish for a Swedish-looking book, else the
+        Audible store's (an unknown-language m4b gets no German edition's description / ISBN / narrator)."""
+        from ..providers.match import norm_language  # noqa: PLC0415
+        return norm_language(book.meta.language) or ("Swedish" if looks_swedish(book) else self.audible.language)
+
     NARRATOR_REGIONS = ("uk", "ca", "au")  # Audible stores that often list a narrator the US one lacks
 
     def _series_as_in_abs(self, books: list[Book]) -> None:
@@ -510,7 +524,8 @@ class OnlineLookup:
                     break
         if not found and self.storytel and m.title:
             try:
-                ranked = rank(book, self.storytel.search(f"{m.title} {book.author or ''}".strip()), language="")
+                ranked = rank(book, self.storytel.search(f"{m.title} {book.author or ''}".strip()),
+                              language=self._language_of(book))  # not a translation's reader
             except OSError:
                 ranked = []
             sure = next((c for c in ranked if c.confident and c.meta.narrators), None)
@@ -616,7 +631,7 @@ class OnlineLookup:
             return False
         for provider in providers:
             try:
-                ranked = rank(book, provider.search(m.title, book.author), language="")
+                ranked = rank(book, provider.search(m.title, book.author), language=self._language_of(book))
             except OSError as e:
                 log.info("%s lookup failed for %s: %s", provider.name, m.title, e)
                 continue
@@ -717,7 +732,7 @@ class OnlineLookup:
                 name = re.sub(r"(?i)\s+series$", "", _LN_SUFFIX_RE.sub("", book.meta.series))
                 bare = re.sub(r"(?i)^(?:the|an?)\s+", "", name)
                 cand = self._ln_candidate(dict.fromkeys([name, bare, f"A {bare}", f"The {bare}"]),
-                                          book.meta.authors)
+                                          book.meta.authors, book)
                 if cand is not None:
                     _only_original_author(book, cand)
             if not book.light_novel and book.meta.title:
@@ -729,6 +744,7 @@ class OnlineLookup:
                         if name else None
                 except OSError:
                     cand = None
+                    _note_once(book, ANILIST_DOWN)
                 full = cand.meta.series if cand else None
                 parts = [fold(x) for x in re.split(r"\s*[:：]\s*", full or "")]
                 if full and any(x.startswith(fold(book.meta.series)) for x in parts):
@@ -741,6 +757,7 @@ class OnlineLookup:
             try:
                 cand = self.anilist.series(_LN_SUFFIX_RE.sub("", book.meta.title), novel=True)
             except OSError:
+                _note_once(book, ANILIST_DOWN)  # not silently 'no light novel'
                 return
             book.light_novel = cand is not None and (not book.meta.authors or any(
                 _close_to(fold(a), {fold(x) for x in cand.meta.authors}) for a in book.meta.authors))
@@ -755,14 +772,16 @@ class OnlineLookup:
         names = dict.fromkeys([name, bare, f"A {bare}", f"The {bare}"])
         return self._ln_candidate(names, authors) is not None
 
-    def _ln_candidate(self, names, authors: list[str] | None = None):
+    def _ln_candidate(self, names, authors: list[str] | None = None, book: Book | None = None):
         """AniList's NOVEL entry for the first of these names that it knows (or None)."""
         try:
             for n in names:
                 if (cand := self.anilist.series(n, novel=True, prefix_ok=True, authors=authors)) is not None:
                     return cand
-        except OSError:
-            pass
+        except OSError as e:
+            log.info("AniList didn't answer: %s", e)
+            if book is not None:
+                _note_once(book, ANILIST_DOWN)
         return None
 
     def search(self, book: Book, query: str) -> list[Candidate]:

@@ -1,4 +1,6 @@
-# AudioBooks & EBook Sorter
+# Shelfkeeper
+
+*(formerly AudioBooks & EBook Sorter - the Book Collection Checker is part of it now)*
 
 > **Work in progress.** It sorts my own library every day, but expect rough edges, changes and bugs.
 
@@ -31,19 +33,31 @@ Sorted\Books\Light Novels\...   Sorted\Books\EBooks\...   Sorted\Books\Comics\..
   sorted books and put them inside the m4b.
 - **Library tools** - duplicates (keeps the best copy), compare a folder with your libraries (Have / Do Not
   Have), edit a sorted book, sort Audiobookshelf collections into reading order.
+- **Your library: Collection** - every series you have (read from Audiobookshelf), per kind (audiobook,
+  light novel, manga, ebook) what you have, what's missing and what's coming - with a release calendar.
+  This was the separate *Book Collection Checker*; its settings and saved lookups are taken over on first use.
+- **Your library: Authors** - type an author and see everything Audible, AniList, Google Books and Open Library
+  know of them, next to what you have. Right-click a book or series: *More by <author>*.
 - **20 colour themes** - including OLED Black, and a couple of textured ones (Cobblestone, Wood).
 
 | Tools | Themes |
 |---|---|
 | ![Tools](docs/screenshots/tools-cobblestone.png) | ![Themes](docs/screenshots/themes-wood.png) |
 
+## Upgrading from AudioBooks & EBook Sorter
+
+Put `Shelfkeeper.exe` where `BookSorter.exe` was and start it: the `BookSorter-data` folder next to it (or
+`%APPDATA%\BookSorter` / `%LOCALAPPDATA%\BookSorter`) is renamed to `Shelfkeeper-data` (`...\Shelfkeeper`)
+and the paths saved inside are updated, so History / Undo of older runs keeps working. Then delete
+`BookSorter.exe`.
+
 ## Download
 
-Grab the latest [release](https://github.com/Farathim89/audiobook-ebook-sorter/releases):
+Grab the latest [release](https://github.com/Farathim89/shelfkeeper/releases):
 
-- **`BookSorter-portable.zip`** - unzip anywhere (USB stick too) and run `BookSorter.exe`. Everything it saves
-  (settings, history/undo, cache, ffmpeg, window layout) stays in the `BookSorter-data` folder next to it.
-- **`BookSorter.exe`** - the same app on its own; it keeps its settings in your user profile.
+- **`Shelfkeeper-portable.zip`** - unzip anywhere (USB stick too) and run `Shelfkeeper.exe`. Everything it saves
+  (settings, history/undo, cache, ffmpeg, window layout) stays in the `Shelfkeeper-data` folder next to it.
+- **`Shelfkeeper.exe`** - the same app on its own; it keeps its settings in your user profile.
 
 No install and no Python needed. Windows 10/11; online lookups need internet.
 
@@ -54,7 +68,7 @@ Windows 10/11, Python 3.10+.
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python booksorter.pyw
+.venv\Scripts\python shelfkeeper.pyw
 ```
 
 On first start it asks for your folders (Incoming, Sorted, and your library folders to protect).
@@ -72,7 +86,7 @@ Command line (same engine, no window):
 build.cmd
 ```
 
-gives `dist\BookSorter.exe` (PyInstaller, one file).
+gives `dist\Shelfkeeper.exe` (PyInstaller, one file).
 
 ## Tests
 

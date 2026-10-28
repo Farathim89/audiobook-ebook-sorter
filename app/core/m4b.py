@@ -9,6 +9,8 @@ A single .m4b that already exists can get Audible chapters by remuxing (no re-en
 from __future__ import annotations
 
 import logging
+import collections
+import threading
 import os
 import json
 import re
@@ -451,6 +453,20 @@ def encode_m4b(m4b: Path, out: Path, chapters: list[Chapter], title: str | None,
     _run_ffmpeg([m4b], out, chapters, title, total, encode=True, on_progress=on_progress, cancelled=cancelled)
 
 
+def _drain(stream) -> tuple[collections.deque, threading.Thread]:
+    """Read ffmpeg's stderr while it runs (keeping the last lines for the error message): a pipe nobody reads
+    fills up on a damaged file, and then ffmpeg - and Cancel - hang."""
+    tail: collections.deque = collections.deque(maxlen=200)
+    t = threading.Thread(target=lambda: tail.extend(stream), daemon=True)
+    t.start()
+    return tail, t
+
+
+def _tail_text(tail: collections.deque, reader: threading.Thread) -> str:
+    reader.join(timeout=2)
+    return "".join(tail)[-500:]
+
+
 def _run_ffmpeg(files, out, chapters, title, total, encode, on_progress=None, cancelled=lambda: False) -> None:
     exe = ffmpeg()
     if not exe:
@@ -470,6 +486,7 @@ def _run_ffmpeg(files, out, chapters, title, total, encode, on_progress=None, ca
         cmd += ["-movflags", "+faststart", "-f", "mp4", "-progress", "pipe:1", "-loglevel", "error", str(tmp_out)]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                 encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
+        errors, reader = _drain(proc.stderr)
         try:
             for line in proc.stdout:
                 if cancelled():
@@ -484,7 +501,7 @@ def _run_ffmpeg(files, out, chapters, title, total, encode, on_progress=None, ca
             if cancelled():
                 raise OSError("cancelled")
             if proc.returncode != 0:
-                raise OSError(f"ffmpeg failed: {proc.stderr.read()[-500:]}")
+                raise OSError(f"ffmpeg failed: {_tail_text(errors, reader)}")
         except BaseException:
             proc.kill()
             tmp_out.unlink(missing_ok=True)
@@ -620,10 +637,13 @@ def reencode_aac(src: Path, out: Path, cancelled: Callable[[], bool] = lambda: F
                "-movflags", "+faststart", "-f", "mp4", str(tmp)]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
+    errors, reader = _drain(proc.stderr)
     while proc.poll() is None:
         if cancelled():
             proc.kill()
+            proc.wait()
             tmp.unlink(missing_ok=True)
+            audio.unlink(missing_ok=True)  # the decoded audio too
             raise OSError("cancelled")
         try:
             proc.wait(timeout=0.5)
@@ -632,7 +652,7 @@ def reencode_aac(src: Path, out: Path, cancelled: Callable[[], bool] = lambda: F
     audio.unlink(missing_ok=True)
     if proc.returncode != 0:
         tmp.unlink(missing_ok=True)
-        raise OSError(f"ffmpeg failed: {proc.stderr.read()[-500:]}")
+        raise OSError(f"ffmpeg failed: {_tail_text(errors, reader)}")
     try:
         cover = MP4(src).tags.get("covr") if MP4(src).tags else None
         if cover:

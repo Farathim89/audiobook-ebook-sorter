@@ -1,18 +1,21 @@
 """Folders and options. The defaults are neutral (shareable); the real folders are chosen in
-Settings (asked on first run) and saved to %APPDATA%\\BookSorter\\settings.json."""
+Settings (asked on first run) and saved to %APPDATA%\\Shelfkeeper\\settings.json."""
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from .portable import PORTABLE
+from .portable import PORTABLE, profile_dir
 
-# portable mode (a BookSorter-data folder next to the exe): everything lives in there
-SETTINGS_FILE = (PORTABLE / "settings.json" if PORTABLE is not None
-                 else Path(os.environ.get("APPDATA") or Path.home()) / "BookSorter" / "settings.json")
-DEFAULT_BASE = Path.home() / "Book Sorter"
+log = logging.getLogger(__name__)
+
+# portable mode (a Shelfkeeper-data folder next to the exe): everything lives in there
+SETTINGS_FILE = PORTABLE / "settings.json" if PORTABLE is not None else profile_dir("APPDATA") / "settings.json"
+DEFAULT_BASE = Path.home() / "Shelfkeeper"
 
 
 @dataclass
@@ -31,8 +34,7 @@ class Folders:
     keep_done: bool = True  # Move mode keeps old copies + leftovers in Done (off: Recycle Bin, or deleted for good)
     done_days: int = 0  # Done\<day> folders older than this go to the Recycle Bin (0 = keep forever)
     # Online-lookup cache, run history (undo) and the processed list.
-    state: Path = (PORTABLE / "state" if PORTABLE is not None
-                   else Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "BookSorter")
+    state: Path = PORTABLE / "state" if PORTABLE is not None else profile_dir("LOCALAPPDATA")
     audible_region: str = "us"
     storytel_locale: str = "se"   # Storytel is asked for Swedish-looking books and when Audible finds nothing
     # Extra online sources (like Audiobookshelf's): they only fill gaps - description, cover, year, ISBN.
@@ -134,18 +136,28 @@ def load_folders(path: Path = SETTINGS_FILE) -> Folders:
     folders = Folders()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError:
         return folders
+    except ValueError:
+        # a damaged file is not a first run: keep it (the next save would overwrite it with defaults)
+        broken = path.with_name(f"{path.name}.broken-{time.strftime('%Y%m%d-%H%M%S')}")
+        try:
+            path.replace(broken)
+            log.warning("settings file was damaged - kept as %s, starting from defaults", broken.name)
+        except OSError:
+            pass
+        return folders
+    base = path.parent  # a relative path in a settings file is inside that file's own (portable) folder
     for f in fields(Folders):
         if f.name not in data:
             continue
         value, default = data[f.name], getattr(folders, f.name)
         if f.name in ("swedish_sorted", "books_incoming"):  # optional - empty is 'not used', never '.'
-            value = _portable_path(value) if value else None
+            value = _portable_path(value, base) if value else None
         elif isinstance(default, list):
-            value = [_portable_path(v) for v in value]
+            value = [_portable_path(v, base) for v in value]
         elif isinstance(default, Path):
-            value = _portable_path(value)
+            value = _portable_path(value, base)
         elif isinstance(default, bool):
             value = bool(value)
         elif isinstance(default, int):
@@ -156,14 +168,18 @@ def load_folders(path: Path = SETTINGS_FILE) -> Folders:
     return folders
 
 
-def _portable_path(value) -> Path:
-    """A relative path in portable settings is inside the BookSorter-data folder (it moves with it)."""
+def _portable_path(value, base: Path | None = None) -> Path:
+    """A relative path in portable settings is inside the Shelfkeeper-data folder (it moves with it) - the
+    folder of the settings file, also when a script loads that file from elsewhere (never the current folder)."""
     p = Path(value)
-    return PORTABLE / p if PORTABLE is not None and not p.is_absolute() else p
+    if p.is_absolute():
+        return p
+    root = base if base is not None else PORTABLE
+    return root / p if root is not None else p
 
 
 def _saved_path(p: Path) -> str:
-    """Portable mode: paths inside BookSorter-data are saved relative, so the folder can move (USB, other PC)."""
+    """Portable mode: paths inside Shelfkeeper-data are saved relative, so the folder can move (USB, other PC)."""
     if PORTABLE is not None:
         try:
             return str(Path(p).resolve().relative_to(PORTABLE.resolve()))
@@ -179,4 +195,6 @@ def save_folders(folders: Folders, path: Path = SETTINGS_FILE) -> None:
         return _saved_path(v) if isinstance(v, Path) else v
     data = {k: plain(v) for k, v in asdict(folders).items()}
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")  # never a half-written settings file
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)

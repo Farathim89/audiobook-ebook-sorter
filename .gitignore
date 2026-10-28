@@ -5,3 +5,11 @@ build/
 dist/
 *.pyc
 *.spec
+
+# your data: never in git (settings with keys, undo history, parked audiobooks, caches)
+state/
+*-data/
+BookSorter-data/
+Shelfkeeper-data/
+CollectionChecker-data/
+*.sqlite

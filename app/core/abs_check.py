@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from typing import Callable
 
 from ..providers.abs import AbsClient
-from .abs_index import split_series
+from .abs_index import _PART_RE, split_series
 from .text import fold
 
 _CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
@@ -49,8 +49,8 @@ def check_abs(client: AbsClient, on_progress: Callable[[str], None] = lambda _: 
             fmt = "audio" if media.get("numAudioFiles") else ("ebook" if media.get("ebookFormat") or media.get("ebookFile")
                                                              else "empty")
             ser = (split_series(md.get("seriesName") or "") or [""])[0]
-            name = re.sub(r"\s*#\s*[\d.]+$", "", ser).strip()
-            num = (re.search(r"#\s*([\d.]+)$", ser) or [None, None])[1]
+            m = _PART_RE.match(ser)  # also a range: 'Musashi: An Epic Novel of the Samurai Era #01–07'
+            name, num = (m.group(1).strip(), m.group(2)) if m else (ser.strip(), None)
             authors = [a.strip() for a in (md.get("authorName") or "").split(",") if a.strip()]
             r = dict(lib=lib["name"], title=md.get("title") or "", authors=authors, series=name, num=num, fmt=fmt,
                      path=it.get("path") or "", missing=bool(it.get("isMissing")),
@@ -81,7 +81,7 @@ def check_abs(client: AbsClient, on_progress: Callable[[str], None] = lambda _: 
                                   + "  |  ".join(r["path"] for r in rs))
     nums = defaultdict(list)
     for r in live:
-        if r["series"] and r["num"]:
+        if r["series"] and r["num"] and re.fullmatch(r"\d+(?:\.\d+)?", r["num"]):  # not '1.2.3'
             nums[(r["lib"], r["fmt"], _skey(r["series"]), float(r["num"]), "dramatized" in r["path"].lower())].append(r)
     for (lib, fmt, _, n, _), rs in nums.items():
         if len(rs) > 1:

@@ -138,6 +138,6 @@ def opf_xml(book: Book) -> str:
 
 
 def download(url: str, timeout: float = 30) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "BookSorter/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Shelfkeeper/0.4"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()

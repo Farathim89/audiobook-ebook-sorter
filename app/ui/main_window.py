@@ -61,7 +61,7 @@ STATE_FILTERS = [("All", "all"), ("Ready", "ready"), ("Check", "check"), ("Revie
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"AudioBooks & EBook Sorter v{__version__}")
+        self.setWindowTitle(f"Shelfkeeper v{__version__}")
         self.folders = load_folders()
         self.processed = Processed(self.folders.state / "processed.txt")
         self._lookup: OnlineLookup | None = None
@@ -110,15 +110,17 @@ class MainWindow(QMainWindow):
         m.addAction(A("E&xit", self.close, "Ctrl+Q"))
 
         m = mb.addMenu("&Edit")
-        m.addAction(A("&Find…", lambda: (self.search.setFocus(), self.search.selectAll()), "Ctrl+F"))
+        books = self._on_books_page
+        m.addAction(A("&Find…", books(lambda: (self.search.setFocus(), self.search.selectAll())), "Ctrl+F"))
         m.addSeparator()
-        m.addAction(A("Tick &ready books", lambda: self._tick_visible(None), "Ctrl+R"))
-        m.addAction(A("Tick &all shown", lambda: self._tick_visible(True), "Ctrl+Shift+A"))
-        m.addAction(A("&Untick all shown", lambda: self._tick_visible(False), "Ctrl+Shift+U"))
-        m.addAction(A("&Skip / unskip selected", lambda: self._set_skipped(
-            self._selected_books(), not all(b in self.model.skipped for b in self._selected_books())), "Delete"))
-        m.addAction(A("&Mark selected as already sorted", lambda: self.mark_sorted(self._selected_books(), True), "Ctrl+M"))
-        m.addAction(A("U&nmark selected (not sorted yet)", lambda: self.mark_sorted(self._selected_books(), False)))
+        m.addAction(A("Tick &ready books", books(lambda: self._tick_visible(None)), "Ctrl+R"))
+        m.addAction(A("Tick &all shown", books(lambda: self._tick_visible(True)), "Ctrl+Shift+A"))
+        m.addAction(A("&Untick all shown", books(lambda: self._tick_visible(False)), "Ctrl+Shift+U"))
+        m.addAction(A("&Skip / unskip selected", books(lambda: self._set_skipped(
+            self._selected_books(), not all(b in self.model.skipped for b in self._selected_books()))), "Delete"))
+        m.addAction(A("&Mark selected as already sorted", books(lambda: self.mark_sorted(self._selected_books(), True)),
+                      "Ctrl+M"))
+        m.addAction(A("U&nmark selected (not sorted yet)", books(lambda: self.mark_sorted(self._selected_books(), False))))
         m.addSeparator()
         m.addAction(self.a_history)
 
@@ -219,13 +221,13 @@ class MainWindow(QMainWindow):
 
     def _about(self) -> None:
         f = self.folders
-        QMessageBox.about(self, "About", f"<b>AudioBooks &amp; EBook Sorter</b> v{__version__}<br>by Farathim<br><br>"
+        QMessageBox.about(self, "About", f"<b>Shelfkeeper</b> v{__version__}<br>by Farathim<br><br>"
                           "Sorts audiobooks, ebooks, manga and light novels into an Audiobookshelf-friendly "
                           "layout. Incoming is only copied from; protected folders are never written to.<br><br>"
                           f"Settings: {SETTINGS_FILE}<br>App data: {f.state}<br>"
-                          + ("<b>Portable mode</b> - everything is kept in the BookSorter-data folder next to the app."
+                          + ("<b>Portable mode</b> - everything is kept in the Shelfkeeper-data folder next to the app."
                              if PORTABLE is not None else
-                             "Portable mode: put a BookSorter-data folder next to BookSorter.exe."))
+                             "Portable mode: put a Shelfkeeper-data folder next to Shelfkeeper.exe."))
 
     def _restore_filters(self) -> None:
         """The search text and state filter from last time."""
@@ -881,6 +883,9 @@ class MainWindow(QMainWindow):
         save_folders(self.folders)
         self.model.refresh()  # status colours come from the theme
         self.sidebar.refresh_theme()
+        for page in (self.collection, self.authors_page):
+            if page is not None:
+                page.refresh_theme()
 
     def _build_body(self) -> None:
         left = QWidget()
@@ -942,6 +947,14 @@ class MainWindow(QMainWindow):
         self.page_host.setObjectName("toolspage")
         QVBoxLayout(self.page_host).setContentsMargins(24, 20, 24, 16)
         self.pages.addWidget(self.page_host)
+        self.collection_host = QWidget()  # the Collection page, built on first visit (it scans your library)
+        QVBoxLayout(self.collection_host).setContentsMargins(0, 0, 0, 0)
+        self.pages.addWidget(self.collection_host)
+        self.collection = None
+        self.authors_page = None  # the Author page, built on first visit
+        # Collection / Authors have their own status line: the sorter's (about Incoming) hides there
+        self.pages.currentChanged.connect(lambda _: self.statusBar().setVisible(
+            self.pages.currentWidget() not in (self.collection_host, self.authors_page)))
         central = QWidget()
         row = QHBoxLayout(central)
         row.setContentsMargins(0, 0, 0, 0)
@@ -1119,6 +1132,13 @@ class MainWindow(QMainWindow):
                                "yourself.\nClick to open the folder.")
 
     # -- helpers -----------------------------------------------------------
+    def _on_books_page(self, fn):
+        """A menu action / shortcut that works on the book list - only while the book list shows."""
+        def run(*_):
+            if self.pages.currentIndex() == 0:
+                fn()
+        return run
+
     @property
     def lookup(self) -> OnlineLookup:
         if self._lookup is None:
@@ -1126,10 +1146,14 @@ class MainWindow(QMainWindow):
         return self._lookup
 
     def _run(self, fn, done, label: str) -> None:
+        if getattr(self, "_busy", False):  # one job at a time (a Tools card, a menu, the auto-sort timer)
+            self.statusBar().showMessage("Busy - wait until the running job is done, or Cancel it.", 8000)
+            return
         self._set_busy(True, label)
         self._worker = Worker(fn)
         self._worker.signals.progress.connect(self._on_progress)
-        self._worker.signals.finished.connect(lambda result: (done(result), self._set_busy(False)))
+        # idle first, then done: when done starts the next step (sort after look up) that step is busy again
+        self._worker.signals.finished.connect(lambda result: (self._set_busy(False), done(result)))
         self._worker.signals.failed.connect(self._on_failed)
         QThreadPool.globalInstance().start(self._worker)
 
@@ -1189,6 +1213,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Error", err)
 
     def _set_busy(self, busy: bool, label: str = "") -> None:
+        self._busy = busy
         for a in (self.a_scan, self.a_lookup, self.a_history, self.a_settings):
             a.setEnabled(not busy)
         self.b_sort.setEnabled(not busy and bool(self.model.books))
@@ -1278,6 +1303,9 @@ class MainWindow(QMainWindow):
         if not books:
             return
         menu = QMenu(self)
+        if author := books[0].author:
+            menu.addAction(f"👤  More by {author}", lambda: self.show_authors(author))
+            menu.addSeparator()
         menu.addAction("Tick", lambda: (self.model.set_checked(books, True), self._update_counts()))
         menu.addAction("Untick", lambda: (self.model.set_checked(books, False), self._update_counts()))
         menu.addSeparator()
@@ -1466,7 +1494,8 @@ class MainWindow(QMainWindow):
 
         def work(w: Worker):
             from ..core.archives import unpack_archives  # noqa: PLC0415
-            unpacked = unpack_archives(sources, folders.done)  # book zips -> folders the scan can read
+            unpacked = unpack_archives([s for s in sources if not folders.is_protected(s)],  # never in a library
+                                       folders.done)  # book zips -> folders the scan can read
             books = load_books(sources, on_progress=lambda i, n, b: w.report(i, n, b.main_file.name))
             unify_names(books, folders.library_roots())
             done = {b for b in books if self.processed.contains(b)}
@@ -1638,7 +1667,7 @@ class MainWindow(QMainWindow):
             self.a_auto.setText("Auto-sort")
 
     def run_auto(self) -> None:
-        if self.progress.isVisible():  # busy with something else - try again next time
+        if getattr(self, "_busy", False):  # busy with something else - try again next time
             return
         folders, processed = self.folders, self.processed
 
@@ -1654,12 +1683,45 @@ class MainWindow(QMainWindow):
         self._run(work, finished, "Auto-sort…")
 
     def _page_chosen(self, page: str) -> None:
+        # leaving Settings / History by the sidebar = Cancel / Close: their clean-up runs (a previewed theme
+        # goes back, the book list is rescanned after an Undo)
+        dlg = getattr(self, "_page_dialog", None)
+        if dlg is not None and self.pages.currentWidget() is self.page_host:
+            self._page_dialog = None
+            dlg.reject()
         if page == "history":
             self.show_history()
         elif page == "settings":
             self.show_settings()
+        elif page == "collection":
+            self.show_collection()
+        elif page == "authors":
+            self.show_authors()
         else:
             self.pages.setCurrentIndex(1 if page == "tools" else 0)
+
+    def show_collection(self) -> None:
+        """Your series - have / missing / coming (the former Book Collection Checker), as a page."""
+        if self.collection is None:
+            from ..collection.ui.main_window import MainWindow as CollectionPage  # noqa: PLC0415
+            self.collection = CollectionPage()
+            self.collection.setWindowFlags(Qt.Widget)
+            self.collection.author_wanted.connect(self.show_authors)
+            self.collection_host.layout().addWidget(self.collection)
+        self.pages.setCurrentWidget(self.collection_host)
+        self.sidebar.b_collection.setChecked(True)
+
+    def show_authors(self, author: str | None = None) -> None:
+        """Everything an author wrote, next to what you have."""
+        if self.authors_page is None:
+            from .author_page import AuthorPage  # noqa: PLC0415
+            self.authors_page = AuthorPage(self.folders)
+            self.pages.addWidget(self.authors_page)
+        self.pages.setCurrentWidget(self.authors_page)
+        self.sidebar.b_authors.setChecked(True)
+        if author:
+            self.authors_page.name.setText(author)
+            self.authors_page.look_up()
 
     def _show_in_page(self, title: str, dlg) -> None:
         """Show a dialog as a page of the main area (Settings, History)."""
@@ -1674,6 +1736,7 @@ class MainWindow(QMainWindow):
         dlg.setWindowFlags(Qt.Widget)
         layout.addWidget(dlg, 1)
         dlg.show()
+        self._page_dialog = dlg
         self.pages.setCurrentIndex(2)
         self.sidebar.b_settings.setChecked(title == "Settings")
         self.sidebar.b_history.setChecked(title == "History")
@@ -1700,6 +1763,12 @@ class MainWindow(QMainWindow):
     def _settings_done(self, accepted: bool) -> None:
         self.model.refresh()  # the theme may have changed (or been previewed and reverted)
         self.sidebar.refresh_theme()
+        if accepted and self.collection is not None:  # a new Audiobookshelf address / key counts there too
+            from ..collection.config import load_settings as collection_settings  # noqa: PLC0415
+            self.collection.settings = collection_settings()
+        for page in (self.collection, self.authors_page):
+            if page is not None:
+                page.refresh_theme()
         if accepted:
             self.processed = Processed(self.folders.state / "processed.txt")
             self._lookup = None
@@ -1729,14 +1798,20 @@ class MainWindow(QMainWindow):
         saved.remove("view/show_sorted")  # old option: sorted books are only under Sorted now
         if self._worker:
             self._worker.cancel()
+        if self.authors_page is not None and self.authors_page.worker is not None:
+            self.authors_page.worker.cancel()
+        if self.collection is not None:
+            self.collection.stop()
         QThreadPool.globalInstance().waitForDone(5000)
+        if self.collection is not None:
+            self.collection.save_now()  # what 'Check online' found so far (its own 'done' won't run any more)
         super().closeEvent(event)
 
 
 def run() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = QApplication(sys.argv)
-    app.setApplicationName("AudioBooks & EBook Sorter")
+    app.setApplicationName("Shelfkeeper")
     app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
     theme.apply(load_folders().theme, app)
