@@ -19,6 +19,7 @@ KIND_LABELS = {"audio": "🎧 Audiobook", "ln": "📖 Light novel", "manga": "�
 _ROLE_OK = re.compile(r"(?i)\b(story|original creator|original work|original|creator|author)\b")  # wrote it
 _ART_ONLY = re.compile(r"(?i)^\s*(art|art assistant|original character design|illustration|character design)\s*$")
 _CJK = re.compile("[぀-ヿ㐀-鿿가-힯]")  # kana, kanji/hanzi, hangul
+_LN_TAG = re.compile(r"(?i)\s*[\(\[](?:light novel|novel)[\)\]]")  # 'Accel World, Vol. 16 (light Novel)'
 _KIND_TAG = re.compile(r"(?i)\s*[\(\[](?:manga|comic|light novel|novel|graphic novel)[\)\]]\s*$")
 
 
@@ -41,16 +42,33 @@ class Work:
     links: dict[str, str] = field(default_factory=dict)        # 'Audible' / 'AniList' -> url
     mine: dict[str, set[float]] = field(default_factory=dict)  # kind -> your volume numbers (0: unnumbered)
     status: str = ""                                           # AniList: 'RELEASING' / 'FINISHED'
+    other_names: list[str] = field(default_factory=list)       # 'Tensei Shitara Slime Datta Ken' (romaji) ...
 
     @property
     def key(self) -> str:
         return work_key(self.name)
 
+    def numbers(self, kind: str) -> set[float]:
+        """The volume numbers of this kind: the ones a source lists, and the ones between them - Open Library
+        lists 'Accel World, Vol. 12, 14, 16 ... 26': volumes 1 to 26 exist. (One far-off number - a box set,
+        a misread year - doesn't stretch the series: 1, 2, 3, 250 is 1-3.)"""
+        listed = sorted({v.number for v in self.volumes if v.kind == kind and v.number is not None})
+        if len(listed) >= 2 and listed[-1] > listed[-2] * 2 + 10:
+            listed = listed[:-1]
+        if not listed:  # only a count (AniList / MangaDex): volumes 1 .. count
+            return {float(n) for n in range(1, self.counts.get(kind, 0) + 1)}
+        top = int(listed[-1])
+        if self.counts.get(kind) and self.status == "FINISHED":
+            # a finished series' own count (AniList) wins: a stray 'Vol. 5' in a book shop doesn't add volumes
+            top = min(top, self.counts[kind])
+            listed = [n for n in listed if n <= top]
+        return set(listed) | {float(n) for n in range(1, top + 1)}
+
     def online(self, kind: str) -> int:
         """How many volumes of this kind the sources know of."""
-        numbers = {v.number for v in self.volumes if v.kind == kind and v.number is not None}
+        numbers = self.numbers(kind)
         loose = sum(1 for v in self.volumes if v.kind == kind and v.number is None)
-        return max(len(numbers) + loose, self.counts.get(kind, 0))
+        return max(len(numbers) or loose, self.counts.get(kind, 0))
 
     def have(self, kind: str) -> int:
         return len(self.mine.get(kind, ()))
@@ -79,15 +97,92 @@ class Works:
 
     def __init__(self) -> None:
         self.by_key: dict[str, Work] = {}
+        self.aliases: dict[str, str] = {}  # another name's key -> the work's key ('saikyounoshokugyou...' -> ...)
+
+    def _key(self, name: str) -> str:
+        key = work_key(name)
+        return self.aliases.get(key, key)
+
+    def find(self, name: str) -> Work | None:
+        return self.by_key.get(self._key(name))
 
     def get(self, name: str) -> Work:
-        key = work_key(name)
+        key = self._key(name)
         if key not in self.by_key:
             self.by_key[key] = Work(_KIND_TAG.sub("", name).strip())
         return self.by_key[key]
 
+    def alias(self, names: list[str], name: str) -> Work:
+        """These names are one work, shown as `name` ('Saikyou no Shokugyou wa ...' = 'The strongest job is
+        apparently not a hero ...'): a work found under one of them before is merged in."""
+        main = self.get(name)
+        key = self._key(name)
+        for other in names:
+            k = work_key(other)
+            if not k or k == key:
+                continue
+            if k in self.by_key and self.by_key[k] is not main:
+                _merge(main, self.by_key.pop(k))
+            self.aliases[k] = key
+            if other not in main.other_names:
+                main.other_names.append(other)
+        return main
+
     def sorted(self) -> list[Work]:
         return sorted(self.by_key.values(), key=lambda w: fold(w.name))
+
+
+def _merge(into: Work, other: Work) -> None:
+    into.volumes += other.volumes
+    into.kinds |= other.kinds
+    for k, n in other.counts.items():
+        into.counts[k] = max(into.counts.get(k, 0), n)
+    for k, v in other.links.items():
+        into.links.setdefault(k, v)
+    for k, nums in other.mine.items():
+        into.mine.setdefault(k, set()).update(nums)
+    into.status = into.status or other.status
+
+
+_ENGLISH = re.compile(r"(?i)\b(the|a|an|of|is|but|in|with|my|and|to|not|for|i|i'm)\b")
+
+
+def english_name(english: str | None, romaji: str | None, synonyms: list[str]) -> str:
+    """AniList's English title, else an English-looking other name ('The strongest job is apparently not a hero
+    or a sage...'), else the romaji one."""
+    if english:
+        return english
+    for n in synonyms or []:
+        if n.isascii() and len(_ENGLISH.findall(n)) >= 2:
+            return n
+    return romaji or (synonyms[0] if synonyms else "")
+
+
+def parents(works: list[Work]) -> dict[int, int | None]:
+    """index -> the index of the work it belongs under (or None): the longest other work whose whole name begins
+    it - 'Sword Art Online: Aincrad' / 'Sword Art Online Progressive' under 'Sword Art Online', 'Sword Art Online
+    Progressive Barcarolle of Froth' under 'Sword Art Online Progressive', 'The Isolator, realization of ...'
+    under 'The Isolator'. Only at a word's end ('Sword Art Onlines' would not belong)."""
+    names = [w.name.casefold().strip() for w in works]
+    every = [[n.casefold().strip() for n in [w.name, *w.other_names] if n] for w in works]
+    out: dict[int, int | None] = {}
+    for i, name in enumerate(names):
+        best, best_len = None, 0
+        for j in range(len(works)):
+            if j == i:
+                continue
+            for other in every[j]:
+                if len(other) >= len(name) or len(other) <= best_len:
+                    continue
+                at = name.find(other)
+                begins = at == 0 and not name[len(other)].isalnum()
+                # 'The Slime Diaries: That Time I Got Reincarnated as a Slime' - a long name inside, word-bounded
+                inside = at > 0 and len(other) >= 15 and not name[at - 1].isalnum() \
+                    and (at + len(other) == len(name) or not name[at + len(other)].isalnum())
+                if begins or inside:
+                    best, best_len = j, len(other)
+        out[i] = best
+    return out
 
 
 # -- the sources' answers ---------------------------------------------------------------------------------
@@ -102,8 +197,11 @@ def add_audible(works: Works, products: list[dict], author: str) -> None:
         numbered = [s for s in listed if _number(s.get("sequence")) is not None]
         s = numbered[0] if numbered else (listed[0] if listed else None)
         title = (p.get("title") or "").strip()
-        w = works.get(s["title"] if s and s.get("title") else title)
         number = _number(s.get("sequence")) if s else None
+        name = s["title"] if s and s.get("title") else title
+        if not s and (vol := parse_volume(title, trailing_number=False)):
+            name, number = vol  # 'Heroine? Saint? No, I'm an All-Works Maid (and Proud of It)!, Vol. 5'
+        w = works.get(name)
         if number is None and any(v.kind == "audio" and v.number is None and fold(v.title) == fold(title)
                                   for v in w.volumes):
             continue  # the same unnumbered audiobook listed twice (another edition / store entry)
@@ -124,7 +222,11 @@ def add_anilist(works: Works, staff: dict) -> None:
                 or re.search(r"(?i)\b(translat|letter|edit)", role):
             continue
         t = node.get("title") or {}
-        w = works.get(t.get("english") or t.get("romaji") or "")
+        synonyms = [n for n in node.get("synonyms") or [] if n]
+        name = english_name(t.get("english"), t.get("romaji"), synonyms)
+        if not name:
+            continue
+        w = works.alias([n for n in (t.get("english"), t.get("romaji"), *synonyms) if n], name)
         w.kinds.add(kind)
         if node.get("volumes"):
             w.counts[kind] = max(w.counts.get(kind, 0), int(node["volumes"]))
@@ -142,14 +244,13 @@ def add_books(works: Works, books: list[tuple[str, list[str], str, str]], author
         manga = bool(re.search(r"(?i)\((?:manga|comic)\)|\bmanga\b", title))
         vol = parse_volume(_KIND_TAG.sub("", title), trailing_number=True)
         name, number = (vol[0], vol[1]) if vol else (title, None)
-        key = work_key(name)
-        w = works.by_key.get(key) or works.get(name)
+        w = works.get(name)
         kind = "manga" if manga else ("ln" if "ln" in w.kinds else "ebook")
         if any(v.kind == kind and v.number == number and (number is not None or fold(v.title) == fold(title))
                for v in w.volumes):
             continue  # the same volume from another edition / source
         w.kinds.add(kind)
-        w.volumes.append(Volume(number, title, kind, source, date[:10], url))
+        w.volumes.append(Volume(number, _LN_TAG.sub("", title).strip(), kind, source, date[:10], url))
 
 
 def add_yours(works: Works, abs_books: list, author: str, only_known: bool = False) -> None:
@@ -162,10 +263,9 @@ def add_yours(works: Works, abs_books: list, author: str, only_known: bool = Fal
                                         ("ln" if "light novel" in b.library.lower() else "ebook"))
         named = [(n, i) for n, i in b.series] or [(b.title, None)]
         for name, idx in named:
-            key = work_key(name)
-            if key not in works.by_key and only_known:
+            if only_known and works.find(name) is None:
                 continue
-            w = works.by_key.get(key) or works.get(name)
+            w = works.get(name)
             # this series' number - a box set ('Books 1-4') its range; never another series' number
             # (Mistborn #1 is also Cosmere #12)
             numbers = (b.numbers if len(named) == 1 and b.numbers else None) or \

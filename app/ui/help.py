@@ -89,7 +89,10 @@ before the original leaves Incoming - <i>Full</i> (the whole file, about 20 s pe
 middle, end). A new file that fails is removed and the original is sorted as it is; the result says why.</li>
 <li><b>Edit &gt; Mark selected as already sorted</b> (Ctrl+M): hide books your library already has.</li>
 </ul>
-<h3>Your library (left menu, LIBRARY)</h3>
+<h3>Your library (the tabs across the top: Sorter · Collection · Authors)</h3>
+<p>The tabs switch between the app's three parts (also <b>Ctrl+1 / Ctrl+2 / Ctrl+3</b>). The left menu shows the
+part of the tab you're on - the sorter's actions and book filters, the Collection's filters and buttons, or the
+authors you looked up last; Tools, History, Settings and How to use are always at the bottom.</p>
 <ul>
 <li><b>Collection</b>: every series you have, read from Audiobookshelf - per kind (🎧 audiobook, 📖 light novel,
 🗯 manga, 📘 ebook) how many you <i>have</i> and how many are missing (<i>✗</i>, red), plus what's coming soon and a

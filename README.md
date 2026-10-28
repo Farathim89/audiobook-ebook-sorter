@@ -14,7 +14,7 @@ Sorted\Books\Manga\<Author>\<Series> (Manga)\<N> - <Series>, Vol. N\
 Sorted\Books\Light Novels\...   Sorted\Books\EBooks\...   Sorted\Books\Comics\...
 ```
 
-![Books view](docs/screenshots/books-gold.png)
+![Sorter](docs/screenshots/sorter-gold.png)
 
 ## What it does
 
@@ -40,8 +40,10 @@ Sorted\Books\Light Novels\...   Sorted\Books\EBooks\...   Sorted\Books\Comics\..
   know of them, next to what you have. Right-click a book or series: *More by <author>*.
 - **20 colour themes** - including OLED Black, and a couple of textured ones (Cobblestone, Wood).
 
-| Tools | Themes |
+| Collection | Authors |
 |---|---|
+| ![Collection](docs/screenshots/collection-gold.png) | ![Authors](docs/screenshots/authors-gold.png) |
+| **Tools** | **Themes** |
 | ![Tools](docs/screenshots/tools-cobblestone.png) | ![Themes](docs/screenshots/themes-wood.png) |
 
 ## Upgrading from AudioBooks & EBook Sorter

@@ -1,30 +1,52 @@
 """The Author page: type an author, see every series and book Audible, AniList and Google Books / OpenLibrary know -
-per kind (🎧 audiobook, 📖 light novel, 🗯 manga, 📘 ebook) what you have and what's missing."""
+per kind (🎧 audiobook, 📖 light novel, 🗯 manga, 📘 ebook) what you have and what's missing.
+
+    left:  the author's works (filter: all / the ones you have some of / the ones new to you)
+    right: the selected work - a tab per kind it exists in, with its volumes, what you have and release dates"""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtCore import Qt, QThreadPool, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCompleter, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QProgressBar, QPushButton, QSplitter, QTableWidget, QVBoxLayout, QWidget)
+                               QProgressBar, QPushButton, QSplitter, QTabBar, QTableWidget, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from ..authors.works import KIND_LABELS, KINDS, Work
+from ..authors.works import KIND_LABELS, KINDS, Work, parents
 from ..collection.ui.main_window import _GroupHeader, _Item, make_copyable
 from ..portable import ui_settings
 from . import theme
+from .columns import resizable_columns
+from .sidebar import SegmentedSwitch
 from .workers import Worker
 
-COLS = ["Series / book", "have", "✗", "have", "✗", "have", "✗", "have", "✗", "Found on"]
+COLS = ["Series / book", "have", "✗", "have", "✗", "have", "✗", "have", "✗"]
 GROUPS = {1: "🎧 A", 3: "📖 LN", 5: "🗯 M", 7: "📘 E"}
-VOLUME_COLS = ["", "#", "Title", "Have", "Release", "Source"]  # the kind as its icon (tooltip: the word)
+VOLUME_COLS = ["#", "Title", "Have", "Release"]
+SHOW = ["All", "You have some", "New to you"]  # which works the list shows
+
+
+class _TreeItem(QTreeWidgetItem):
+    """Sorts by a cell's number (UserRole + 1) when it has one, else by its text."""
+
+    def __lt__(self, other) -> bool:  # noqa: D105
+        col = self.treeWidget().sortColumn() if self.treeWidget() else 0
+        a, b = self.data(col, Qt.UserRole + 1), other.data(col, Qt.UserRole + 1)
+        if a is not None or b is not None:
+            return (a or 0) < (b or 0)
+        return self.text(col).casefold() < other.text(col).casefold()
 
 
 class AuthorPage(QWidget):
+    recent_changed = Signal(list)  # the authors looked up last, newest first (the sidebar's RECENT)
+
     def __init__(self, folders, parent=None):
         super().__init__(parent)
         self.folders = folders
         self.works: list[Work] = []
         self.worker: Worker | None = None
         self._pending: str | None = None  # 'More by Y' while X is looked up: Y next
+        self._shown: Work | None = None
+        self._kinds: list[str] = []  # the kind of each tab on the right
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 10, 12, 8)
         row = QHBoxLayout()
@@ -40,6 +62,7 @@ class AuthorPage(QWidget):
         v.addLayout(row)
         self.status = QLabel("Every series and book of an author, next to what you have.")
         self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
         self.bar = QProgressBar()
         self.bar.setMaximumWidth(220)
         self.bar.setVisible(False)
@@ -49,21 +72,44 @@ class AuthorPage(QWidget):
         v.addLayout(srow)
 
         split = QSplitter()
-        t = self.table = QTableWidget(0, len(COLS))
-        t.setHorizontalHeader(_GroupHeader(t, GROUPS))
-        t.setHorizontalHeaderLabels(COLS)
-        t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        frow = QHBoxLayout()
+        self.show_filter = SegmentedSwitch(SHOW)
+        self.show_filter.setMaximumWidth(420)
+        self.show_filter.setToolTip("All of the author's works / only the ones you have some of / only the ones "
+                                    "you have none of yet")
+        try:
+            self.show_filter.setCurrentIndex(int(ui_settings().value("authors/show", 0)))
+        except (TypeError, ValueError):
+            pass
+        self.show_filter.currentIndexChanged.connect(lambda i: (ui_settings().setValue("authors/show", i), self.fill()))
+        frow.addWidget(self.show_filter)
+        self.count = QLabel()
+        self.count.setObjectName("muted")
+        frow.addWidget(self.count, 1, Qt.AlignRight)
+        lv.addLayout(frow)
+        # a tree: a series' spin-offs, manga adaptations and side stories fold under it
+        t = self.table = QTreeWidget()
+        t.setColumnCount(len(COLS))
+        t.setHeader(_GroupHeader(t, GROUPS))
+        t.setHeaderLabels(COLS)
         t.setSelectionMode(QAbstractItemView.SingleSelection)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        t.verticalHeader().setVisible(False)
-        t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        for c, width in enumerate((380, 48, 44, 48, 44, 48, 44, 48, 44, 170)):
-            t.setColumnWidth(c, width)
-        t.itemSelectionChanged.connect(self.show_work)
-        split.addWidget(t)
+        t.setUniformRowHeights(True)
+        t.setWordWrap(False)
+        t.setIndentation(18)
+        # every column can be dragged wider / narrower (remembered); the name starts wide
+        self._own_widths = resizable_columns(
+            t, "authors/widths", {0: 430, **{c: 52 if c % 2 else 46 for c in range(1, len(COLS))}}, ui_settings)
+        t.currentItemChanged.connect(lambda *_: self.show_work())
+        lv.addWidget(t, 1)
+        split.addWidget(left)
+
         right = QWidget()
         r = QVBoxLayout(right)
-        r.setContentsMargins(8, 0, 0, 0)
+        r.setContentsMargins(10, 0, 0, 0)
         self.title = QLabel("Select a series")
         self.title.setObjectName("pagetitle")
         self.title.setWordWrap(True)
@@ -72,23 +118,53 @@ class AuthorPage(QWidget):
         self.links.setOpenExternalLinks(True)
         self.links.setWordWrap(True)
         r.addWidget(self.links)
+        self.kind_tabs = QTabBar()
+        self.kind_tabs.setExpanding(False)
+        self.kind_tabs.setDrawBase(False)
+        self.kind_tabs.currentChanged.connect(lambda _: self._show_kind())
+        r.addWidget(self.kind_tabs)
+        self.summary = QLabel()
+        self.summary.setObjectName("muted")
+        self.summary.setWordWrap(True)
+        r.addWidget(self.summary)
         vt = self.volumes = QTableWidget(0, len(VOLUME_COLS))
         vt.setHorizontalHeaderLabels(VOLUME_COLS)
         vt.verticalHeader().setVisible(False)
         vt.setEditTriggers(QAbstractItemView.NoEditTriggers)
         vt.setSelectionBehavior(QAbstractItemView.SelectRows)
-        vt.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        for c, width in ((0, 34), (1, 40), (3, 46), (4, 84), (5, 84)):
-            vt.setColumnWidth(c, width)
+        vt.setWordWrap(False)
+        self._own_volume_widths = resizable_columns(vt, "authors/volume_widths", {0: 46, 1: 360, 2: 58, 3: 104},
+                                                    ui_settings, stretch_last=True)
+        self._fitted = False
         r.addWidget(vt, 1)
         split.addWidget(right)
-        split.setSizes([900, 520])
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        split.setSizes([820, 560])
         v.addWidget(split, 1)
-        for table in (self.table, self.volumes):
-            make_copyable(table)
+        make_copyable(self.volumes)
         self._complete_from_library()
 
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt
+        super().showEvent(event)
+        if not self._fitted:  # first time shown: names / titles take the room, every column visible
+            self._fitted = True
+            from PySide6.QtCore import QTimer  # noqa: PLC0415
+            QTimer.singleShot(0, self._fit)
+
+    def _fit(self) -> None:
+        from .columns import fill_column  # noqa: PLC0415
+        if not self._own_widths:
+            fill_column(self.table, 0)
+        if not self._own_volume_widths:
+            fill_column(self.volumes, 1, least=140)
+
     # -- looking up -----------------------------------------------------------------------------------
+    @staticmethod
+    def recent() -> list[str]:
+        value = ui_settings().value("authors/recent", []) or []
+        return [value] if isinstance(value, str) else [str(v) for v in value]
+
     def _complete_from_library(self) -> None:
         """Suggest the authors your Audiobookshelf has - read in the background (it asks Audiobookshelf)."""
         folders = self.folders
@@ -117,6 +193,9 @@ class AuthorPage(QWidget):
             self.status.setText(f"{author} next…")
             return
         ui_settings().setValue("authors/last", author)
+        recent = [author] + [n for n in self.recent() if n.casefold() != author.casefold()]
+        ui_settings().setValue("authors/recent", recent[:12])
+        self.recent_changed.emit(recent[:12])
         from ..authors.sources import AuthorLookup  # noqa: PLC0415
         lookup = AuthorLookup(self.folders, _google_key(self.folders))
         self.worker = Worker(lambda w: lookup.run(author, w.report, w.cancelled))
@@ -155,96 +234,218 @@ class AuthorPage(QWidget):
         if self._next():
             return  # cancelled for the next author: these results are the old one's
         self.works = works.sorted()
-        mine = sum(1 for w in self.works if any(w.have(k) for k in KINDS))
-        missing = sum(w.missing(k) for w in self.works for k in KINDS if any(w.have(x) for x in KINDS))
-        text = f"{author}: {len(self.works)} series / books found - you have {mine} of them"
+        mine = sum(1 for w in self.works if _collecting(w))
+        missing = sum(w.missing(k) for w in self.works if _collecting(w) for k in KINDS)
+        text = f"{author}: {len(self.works)} series / books - you have {mine} of them"
         if missing:
             text += f", {missing} volumes missing in those"
         self.status.setText(text + ("" if not notes else "  ·  " + "; ".join(notes)))
         self.fill()
 
-    # -- showing ---------------------------------------------------------------------------------------
+    # -- the list (left) ---------------------------------------------------------------------------------
+    def _matches(self, w: Work) -> bool:
+        show = self.show_filter.currentIndex()
+        return show == 0 or (show == 1) == _collecting(w)
+
     def fill(self) -> None:
         p = theme._current  # noqa: SLF001 - the theme's colours
+        keep = self._shown
+        up = parents(self.works)
+        kids: dict[int, list[int]] = {}
+        for i, j in up.items():
+            if j is not None:
+                kids.setdefault(j, []).append(i)
+
+        def family(i: int) -> list[int]:
+            return [i] + [k for c in kids.get(i, []) for k in family(c)]
+
+        # a work shows when it - or something folded under it - fits the filter
+        shown = {i for i in range(len(self.works)) if any(self._matches(self.works[k]) for k in family(i))}
         t = self.table
         t.setSortingEnabled(False)
-        t.setRowCount(len(self.works))
-        for r, w in enumerate(self.works):
-            name = _Item(w.name)
-            name.setData(Qt.UserRole, r)
-            name.setToolTip(", ".join(KIND_LABELS[k] for k in KINDS if k in w.kinds or w.have(k)))
-            t.setItem(r, 0, name)
-            collecting = any(w.have(k) for k in KINDS)
-            for i, kind in enumerate(KINDS):
-                have, online, miss = w.have(kind), w.online(kind), w.missing(kind)
-                hv = _Item(str(have) if have else "")
-                hv.setData(Qt.UserRole + 1, have)
-                if miss:
-                    ms = _Item(f"✗{miss}" if have else str(online))
-                    ms.setForeground(QColor(p.problem if have else p.check))
-                    ms.setToolTip(f"{miss} missing" if have else f"{online} exist - you have none")
-                else:
-                    ms = _Item("✓" if have and online else "")
-                    ms.setForeground(QColor(p.ready))
-                ms.setData(Qt.UserRole + 1, miss)
-                for it in (hv, ms):
-                    it.setTextAlignment(Qt.AlignCenter)
-                t.setItem(r, 1 + 2 * i, hv)
-                t.setItem(r, 2 + 2 * i, ms)
-            where = sorted({v.source.capitalize() for v in w.volumes} | ({"AniList"} if "AniList" in w.links else set()))
-            if not where and collecting:
-                where = ["only in your library"]
-            t.setItem(r, 9, _Item(", ".join(where).replace("Openlibrary", "OpenLibrary")))
+        t.clear()
+        items: dict[int, _TreeItem] = {}
+        for i in sorted(shown, key=lambda i: _depth(i, up)):  # a main series before what folds under it
+            w = self.works[i]
+            item = _TreeItem()
+            items[i] = item
+            parent = up[i] if up[i] in shown else None
+            (items[parent].addChild(item) if parent is not None and parent in items else t.addTopLevelItem(item))
+            self._fill_item(item, w, i, len(family(i)) - 1, p)
         t.setSortingEnabled(True)
-        t.sortByColumn(0, Qt.AscendingOrder)  # A-Z: a franchise's series next to each other
-        if self.works:
-            t.selectRow(0)
+        t.sortByColumn(0, Qt.AscendingOrder)  # A-Z
+        tops = sum(1 for i in shown if up[i] not in shown)
+        self.count.setText(f"{tops} series · {len(shown)} works" if self.works else "")
+        target = next((it for i, it in items.items() if self.works[i] is keep), None)
+        if target is None and t.topLevelItemCount():
+            target = t.topLevelItem(0)
+        if target is not None:
+            t.setCurrentItem(target)
+        else:
+            self._clear_right()
+
+    def _fill_item(self, item: QTreeWidgetItem, w: Work, index: int, related: int, p) -> None:
+        item.setText(0, f"{w.name}   +{related}" if related else w.name)
+        item.setData(0, Qt.UserRole, index)
+        kinds = ", ".join(KIND_LABELS[k] for k in KINDS if k in w.kinds or w.have(k))
+        where = sorted({v.source.capitalize() for v in w.volumes} | ({"Anilist"} if "AniList" in w.links else set()))
+        found = ", ".join(where).replace("Openlibrary", "Open Library").replace("Anilist", "AniList") \
+            or ("only in your library" if _collecting(w) else "")
+        tip = f"{w.name}\n{kinds}\nfound on: {found}"
+        if related:
+            tip += f"\n+{related} related (spin-offs, manga, side stories): click the arrow"
+        item.setToolTip(0, tip)
+        for i, kind in enumerate(KINDS):
+            have, online, miss = w.have(kind), w.online(kind), w.missing(kind)
+            hc, mc = 1 + 2 * i, 2 + 2 * i
+            item.setText(hc, str(have) if have or online else "")
+            item.setData(hc, Qt.UserRole + 1, have)
+            if not have and online:
+                item.setForeground(hc, QColor(p.muted))
+            if miss:
+                item.setText(mc, f"✗{miss}")
+                item.setForeground(mc, QColor(p.problem if have else p.check))
+                item.setToolTip(mc, f"{miss} missing" if have else f"{online} exist - you have none of them")
+            elif have and online:
+                item.setText(mc, "✓")
+                item.setForeground(mc, QColor(p.ready))
+            elif kind in w.kinds and not have and not online:  # it exists in this kind - how many is unknown
+                item.setText(mc, "?")
+                item.setForeground(mc, QColor(p.muted))
+                item.setToolTip(mc, f"exists as {KIND_LABELS[kind].split(' ', 1)[1].lower()} - "
+                                    "no source lists its volumes yet")
+            item.setData(mc, Qt.UserRole + 1, miss)
+            item.setTextAlignment(hc, Qt.AlignCenter)
+            item.setTextAlignment(mc, Qt.AlignCenter)
+
+    # -- the selected work (right) ------------------------------------------------------------------------
+    def _clear_right(self) -> None:
+        self._shown = None
+        self.title.setText("Select a series")
+        self.links.clear()
+        self.summary.clear()
+        while self.kind_tabs.count():
+            self.kind_tabs.removeTab(0)
+        self.volumes.setRowCount(0)
 
     def show_work(self) -> None:
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
+        item = self.table.currentItem()
+        if item is None:
             return
-        w = self.works[self.table.item(rows[0].row(), 0).data(Qt.UserRole)]
+        w = self.works[item.data(0, Qt.UserRole)]
+        before = self._kinds[self.kind_tabs.currentIndex()] if self._shown is w and self._kinds else None
+        self._shown = w
         self.title.setText(w.name)
-        bits = [f'<a href="{url}" style="color:{theme._current.accent}">{name}</a>'  # noqa: SLF001
-                for name, url in w.links.items()]
+        accent = theme._current.accent  # noqa: SLF001
+        bits = [f'<a href="{url}" style="color:{accent}">{name}</a>' for name, url in w.links.items()]
         if w.status:
             bits.append({"RELEASING": "still coming out", "FINISHED": "finished"}.get(w.status, w.status.lower()))
         self.links.setText("  ·  ".join(bits))
+        self.kind_tabs.blockSignals(True)
+        while self.kind_tabs.count():
+            self.kind_tabs.removeTab(0)
+        self._kinds = [k for k in KINDS if k in w.kinds or w.have(k) or w.online(k)]
+        for k in self._kinds:
+            n = max(w.online(k), w.have(k))
+            self.kind_tabs.addTab(f"{KIND_LABELS[k]}  {n}" if n else KIND_LABELS[k])
+        # the tab of the kind you collect it in first (else the first kind it exists in)
+        first = before if before in self._kinds else next((k for k in self._kinds if w.have(k)), None)
+        self.kind_tabs.setCurrentIndex(self._kinds.index(first) if first in self._kinds else 0)
+        self.kind_tabs.blockSignals(False)
+        self._show_kind()
+
+    def _show_kind(self) -> None:
+        w = self._shown
+        if w is None or not self._kinds:
+            self.volumes.setRowCount(0)
+            self.summary.clear()
+            return
+        kind = self._kinds[max(0, self.kind_tabs.currentIndex())]
         p = theme._current  # noqa: SLF001
-        rows_out = []
-        for kind in KINDS:
-            mine = w.mine.get(kind, set())
-            seen = set()
-            for v in sorted((v for v in w.volumes if v.kind == kind), key=lambda v: (v.number is None, v.number or 0)):
-                if v.number is not None and v.number in seen:
-                    continue
-                seen.add(v.number)
-                rows_out.append((kind, v.number, v.title, v.number in mine if v.number is not None else None,
-                                 v.date, v.source))
-            known = {n for n in seen if n is not None}
-            if w.counts.get(kind) and not known:
-                rows_out.append((kind, None, f"{w.counts[kind]} volumes (AniList)", None, "", "anilist"))
-            for n in sorted(mine - known):
-                rows_out.append((kind, n if n else None, "in your library", True, "", ""))
+        mine = w.mine.get(kind, set())
+        rows_out, seen, sources = [], set(), set()
+        for v in sorted((v for v in w.volumes if v.kind == kind), key=lambda v: (v.number is None, v.number or 0)):
+            if v.number is not None and v.number in seen:
+                continue
+            seen.add(v.number)
+            sources.add(v.source)
+            rows_out.append((v.number, v.title, v.number in mine if v.number is not None else None, v.date,
+                             v.source, v.url))
+        known = {n for n in seen if n is not None}
+        for n in sorted(w.numbers(kind) - known):  # between listed volumes: they exist, no source names them
+            rows_out.append((n, f"{w.name}, Vol. {n:g}", n in mine, "", "between", ""))
+        rows_out.sort(key=lambda r: (r[0] is None, r[0] or 0))
+        known |= w.numbers(kind)
+        if w.counts.get(kind) and not known:
+            rows_out.append((None, f"{w.counts[kind]} volumes (AniList)", None, "", "anilist", ""))
+            sources.add("anilist")
+        for n in sorted(mine - known):
+            rows_out.append((n if n else None, "in your library", True, "", "", ""))
+        have, miss = w.have(kind), w.missing(kind)
+        names = {"audible": "Audible", "anilist": "AniList", "google": "Google Books", "openlibrary": "Open Library",
+                 "between": "no source names this one - its number lies within the series' known volumes"}
+        sources.discard("between")
+        text = f"You have {have}" + (f" · {miss} missing" if miss else (" · all of them" if have else ""))
+        if sources:
+            text += "  ·  from " + ", ".join(names.get(s, s) for s in sorted(sources))
+        self.summary.setText(text)
         vt = self.volumes
+        vt.clearSpans()
+        if not rows_out:  # the work exists (AniList knows it) but no source lists its volumes
+            known_by = " and ".join(n for n in ("AniList", "Audible") if n in w.links) or "a source"
+            note = (f"No source lists its volumes yet - {known_by} knows it as "
+                    f"{KIND_LABELS[kind].split(' ', 1)[1].lower()}"
+                    + (", still coming out" if w.status == "RELEASING" else "") + ". Look up again later.")
+            vt.setRowCount(1)
+            it = _Item(note)
+            it.setForeground(QColor(p.muted))
+            it.setToolTip(note)
+            vt.setItem(0, 0, it)
+            vt.setSpan(0, 0, 1, vt.columnCount())
+            self.summary.setText(f"You have {have}  ·  volumes unknown")
+            return
         vt.setRowCount(len(rows_out))
-        for r, (kind, n, title, have, date, source) in enumerate(rows_out):
-            cells = [KIND_LABELS[kind].split()[0], "" if n is None else f"{n:g}", title,
-                     "✓" if have else ("✗" if have is False else ""), date, source.capitalize()]
-            for c, text in enumerate(cells):
-                it = _Item(text)
-                if c == 0:
-                    it.setToolTip(KIND_LABELS[kind])
-                elif c == 2:
-                    it.setToolTip(text)
-                if c == 3:
+        for r, (n, title, owned, date, source, url) in enumerate(rows_out):
+            cells = ["" if n is None else f"{n:g}", _short(title, w.name), "✓" if owned else ("✗" if owned is False else ""),
+                     date]
+            for c, cell in enumerate(cells):
+                it = _Item(cell)
+                if c == 1:
+                    it.setToolTip(f"{title}\n{names.get(source, source)}" + (f"\n{url}" if url else ""))
+                if c in (0, 2):
                     it.setTextAlignment(Qt.AlignCenter)
-                    it.setForeground(QColor(p.ready if have else p.problem))
+                if c == 2:
+                    it.setForeground(QColor(p.ready if owned else p.problem))
+                elif source == "between" and c in (1, 3):
+                    it.setForeground(QColor(p.muted))
                 vt.setItem(r, c, it)
 
     def refresh_theme(self) -> None:
         self.fill()
+
+
+def _short(title: str, series: str) -> str:
+    """The title without the series name the heading already shows: 'Heroine? Saint? No, I'm an All-Works Maid
+    (and Proud of It)!, Vol. 5' -> 'Vol. 5', 'Sword Art Online 3: Fairy Dance' -> '3: Fairy Dance'."""
+    import re  # noqa: PLC0415
+    title = re.sub(r"(?i)\s*[\(\[](?:light novel|novel)[\)\]]", "", title).strip()  # '(Light Novel), Vol. 4'
+    if series and title.casefold().startswith(series.casefold()):
+        rest = title[len(series):].lstrip(" ,:;-–—")
+        if rest:
+            return rest
+    return title
+
+
+def _depth(i: int, up: dict[int, int | None]) -> int:
+    d = 0
+    while up.get(i) is not None:
+        i, d = up[i], d + 1
+    return d
+
+
+def _collecting(w: Work) -> bool:
+    """You have some of it."""
+    return any(w.have(k) for k in KINDS)
 
 
 def _google_key(folders) -> str:

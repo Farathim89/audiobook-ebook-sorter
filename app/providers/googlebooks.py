@@ -26,7 +26,8 @@ class GoogleBooks:
     def search(self, title: str, author: str | None = None) -> list[Candidate]:
         if self.blocked:
             return []
-        q = f'intitle:"{title}"' + (f' inauthor:"{author}"' if author else "")
+        # plain words: Google finds nothing for intitle:"..." inauthor:"..." these days (the ranking sorts it out)
+        q = f"{title} {author or ''}".strip()
         params = {"q": q, "maxResults": 10, "printType": "books"}
         if self.api_key:
             params["key"] = self.api_key

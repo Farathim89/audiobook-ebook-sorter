@@ -45,7 +45,8 @@ from ..providers.abs import AbsClient
 from .dialogs import DuplicateDialog, EditSortedDialog, HistoryDialog, SettingsDialog
 from .help import HelpDialog
 from ..portable import PORTABLE, ui_settings
-from .sidebar import Sidebar, tool_card
+from .columns import smooth_scrolling
+from .sidebar import APP_PAGES, AppTabs, Sidebar, tool_card
 from . import theme
 from .workers import Worker
 
@@ -125,6 +126,10 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_history)
 
         m = mb.addMenu("&View")
+        m.addAction(A("&Sorter", lambda: self._page_chosen("books"), "Ctrl+1"))
+        m.addAction(A("&Collection", lambda: self._page_chosen("collection"), "Ctrl+2"))
+        m.addAction(A("&Authors", lambda: self._page_chosen("authors"), "Ctrl+3"))
+        m.addSeparator()
         self.a_details = A("&Details panel", None, "Ctrl+D", None, checkable=True)
         self.a_details.setChecked(True)
         m.addAction(self.a_details)
@@ -924,6 +929,7 @@ class MainWindow(QMainWindow):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
+        smooth_scrolling(self.table)  # left-right by pixels, not a whole column at a time
         for col, width in ((COL_CHECK, 28), (COL_STATUS, 96), (COL_TYPE, 120), (COL_AUTHOR, 160), (COL_SERIES, 190), (COL_TITLE, 260)):
             self.table.setColumnWidth(col, width)
         self.table.selectionModel().currentRowChanged.connect(lambda *_: self._show_current())
@@ -956,12 +962,23 @@ class MainWindow(QMainWindow):
         self.pages.currentChanged.connect(lambda _: self.statusBar().setVisible(
             self.pages.currentWidget() not in (self.collection_host, self.authors_page)))
         central = QWidget()
-        row = QHBoxLayout(central)
+        col = QVBoxLayout(central)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        # the app's three parts as tabs across the top: Sorter / Collection / Authors
+        self.app_tabs = AppTabs()
+        self.app_tabs.currentIndexChanged.connect(lambda i: self._page_chosen(APP_PAGES[i]))
+        col.addWidget(self.app_tabs)
+        row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         row.addWidget(self.sidebar)
         row.addWidget(self.pages, 1)
+        col.addLayout(row, 1)
         self.setCentralWidget(central)
+        self.sidebar.author_chosen.connect(self.show_authors)
+        self.sidebar.collection_row.connect(lambda r: self.collection is not None and self.collection.menu.setCurrentRow(r))
+        self.sidebar.collection_action.connect(self._collection_action)
         self.sidebar.filter_chosen.connect(lambda k: self.state_filter.setCurrentIndex(
             [key for _, key in STATE_FILTERS].index(k)))
         self.sidebar.page_chosen.connect(self._page_chosen)
@@ -1697,8 +1714,12 @@ class MainWindow(QMainWindow):
             self.show_collection()
         elif page == "authors":
             self.show_authors()
-        else:
-            self.pages.setCurrentIndex(1 if page == "tools" else 0)
+        elif page == "tools":
+            self.pages.setCurrentIndex(1)
+        else:  # the Sorter tab / a book filter
+            self.pages.setCurrentIndex(0)
+            self._set_app("books")
+            self.sidebar.select_filter(STATE_FILTERS[self.state_filter.currentIndex()][1])
 
     def show_collection(self) -> None:
         """Your series - have / missing / coming (the former Book Collection Checker), as a page."""
@@ -1706,19 +1727,37 @@ class MainWindow(QMainWindow):
             from ..collection.ui.main_window import MainWindow as CollectionPage  # noqa: PLC0415
             self.collection = CollectionPage()
             self.collection.setWindowFlags(Qt.Widget)
+            self.collection.side.hide()  # its filters and buttons are in this window's sidebar
+            smooth_scrolling(self.collection)
             self.collection.author_wanted.connect(self.show_authors)
+            self.collection.totals_changed.connect(self.sidebar.set_collection_totals)
+            self.collection.menu.currentRowChanged.connect(self.sidebar.select_collection_row)
+            self.sidebar.set_collection_totals(self.collection.totals.text())
             self.collection_host.layout().addWidget(self.collection)
         self.pages.setCurrentWidget(self.collection_host)
-        self.sidebar.b_collection.setChecked(True)
+        self._set_app("collection")
+
+    def _collection_action(self, what: str) -> None:
+        self.show_collection()
+        c = self.collection
+        {"scan": c.scan, "check": c.check_online, "copy": c.copy_missing, "settings": c.open_settings}[what]()
+
+    def _set_app(self, page: str) -> None:
+        """The tab at the top and its part of the sidebar."""
+        self.app_tabs.setCurrentIndex(APP_PAGES.index(page))
+        self.sidebar.set_app(page)
 
     def show_authors(self, author: str | None = None) -> None:
         """Everything an author wrote, next to what you have."""
         if self.authors_page is None:
             from .author_page import AuthorPage  # noqa: PLC0415
             self.authors_page = AuthorPage(self.folders)
+            smooth_scrolling(self.authors_page)
+            self.authors_page.recent_changed.connect(self.sidebar.set_recent)
+            self.sidebar.set_recent(self.authors_page.recent())
             self.pages.addWidget(self.authors_page)
         self.pages.setCurrentWidget(self.authors_page)
-        self.sidebar.b_authors.setChecked(True)
+        self._set_app("authors")
         if author:
             self.authors_page.name.setText(author)
             self.authors_page.look_up()
@@ -1742,8 +1781,15 @@ class MainWindow(QMainWindow):
         self.sidebar.b_history.setChecked(title == "History")
 
     def _back_to_books(self) -> None:
-        self.pages.setCurrentIndex(0)
-        self.sidebar.select_filter(STATE_FILTERS[self.state_filter.currentIndex()][1])
+        """Settings / History closed: back to the tab you came from (Sorter, Collection or Authors)."""
+        page = self.sidebar.app_page()
+        if page == "collection":
+            self.show_collection()
+        elif page == "authors":
+            self.show_authors()
+        else:
+            self.pages.setCurrentIndex(0)
+            self.sidebar.select_filter(STATE_FILTERS[self.state_filter.currentIndex()][1])
 
     def show_history(self) -> None:
         dlg = HistoryDialog(self.folders, self.processed, self)

@@ -273,7 +273,7 @@ def _primary(p: Palette) -> str:
 def stylesheet(p: Palette) -> str:
     primary = _primary(p)
     texture = texture_file(p.texture)
-    textured = (f"QFrame#sidebar, QFrame#sidebar QWidget#sidebody, QFrame#sidebar QWidget#brand, "
+    textured = (f"QFrame#apptabbar, QFrame#sidebar, QFrame#sidebar QWidget#sidebody, QFrame#sidebar QWidget#brand, "
                 f"QScrollArea#sidescroll, QWidget#toolspage {{ background-color: {p.panel}; "
                 f"background-image: url({texture}); }}\n"
                 f"QFrame#sidebar QLabel, QWidget#toolspage QLabel {{ background: transparent; }}") if texture else ""
@@ -302,7 +302,7 @@ QComboBox {{ combobox-popup: 0; }}  /* the list drops DOWN under the box (not ov
 QComboBox QAbstractItemView {{ background: {p.field}; selection-background-color: {p.selection}; selection-color: {p.text};
     border: 1px solid {p.accent_dark}; outline: none; padding: 2px; }}
 QComboBox QAbstractItemView::item {{ min-height: 24px; padding: 2px 8px; }}
-QTableView, QListWidget, QTableWidget {{
+QTableView, QListWidget, QTableWidget, QTreeView {{
     background: {p.panel}; alternate-background-color: {p.alt_row}; border: 1px solid {p.border};
     gridline-color: {p.border}; selection-background-color: {p.selection}; selection-color: {p.text};
 }}
@@ -371,13 +371,18 @@ QLabel#badge {{ background: {p.field}; color: {p.muted}; border-radius: 9px; pad
                min-width: 14px; }}
 QLabel#badge[on="true"] {{ background: {soft}; color: {soft_text}; }}
 QPushButton#segfirst, QPushButton#segmid, QPushButton#seglast {{ background: {p.field}; border: 1px solid {p.border}; padding: 2px 8px; color: {p.muted}; border-radius: 0; }}
-QPushButton#pilltoggle {{ background: {p.field}; border: 1px solid {p.border}; border-radius: 7px; padding: 2px 6px; color: {p.muted}; }}
-QPushButton#pilltoggle:checked {{ background: {soft}; color: {soft_text}; border-color: {soft_border}; font-weight: bold; }}
-QPushButton#pilltoggle:hover:!checked {{ color: {p.accent}; }}
+QPushButton#togglerow {{ background: {p.field}; border: 1px solid {p.border}; border-radius: 7px; padding: 2px 52px 2px 10px; text-align: left; color: {p.muted}; }}
+QPushButton#togglerow:checked {{ color: {p.text}; border-color: {p.accent}; font-weight: bold; }}
+QPushButton#togglerow:hover {{ border-color: {p.accent}; }}
+QPushButton#togglerow:disabled {{ color: {p.muted}; background: transparent; border: 1px dashed {p.muted}; }}
 QPushButton#segfirst {{ border-top-left-radius: 7px; border-bottom-left-radius: 7px; }}
 QPushButton#seglast {{ border-top-right-radius: 7px; border-bottom-right-radius: 7px; border-left: none; }}
 QPushButton#segfirst:checked, QPushButton#segmid:checked, QPushButton#seglast:checked {{ background: {soft}; color: {soft_text}; border-color: {soft_border}; font-weight: bold; }}
 QPushButton#segfirst:hover:!checked, QPushButton#segmid:hover:!checked, QPushButton#seglast:hover:!checked {{ color: {p.accent}; }}
+QFrame#apptabbar {{ background: {p.panel}; border: none; border-bottom: 1px solid {p.border}; }}
+QFrame#apptabbar QPushButton#apptab {{ background: transparent; border: none; border-bottom: 3px solid transparent; border-radius: 0; padding: 7px 18px 5px 18px; color: {p.muted}; font-size: 10.5pt; }}
+QFrame#apptabbar QPushButton#apptab:hover:!checked {{ color: {p.text}; border-bottom-color: {p.border}; }}
+QFrame#apptabbar QPushButton#apptab:checked {{ color: {p.accent}; border-bottom-color: {p.accent}; font-weight: bold; }}
 QScrollArea#details {{ border: none; }}
 QFrame#sidebar QPushButton#primary {{ border-radius: 8px; font-size: 10.5pt; }}
 QPushButton#sideaction {{ background: {p.field}; border: 1px solid {p.border}; border-radius: 8px; padding: 4px 12px; text-align: left; color: {p.text}; }}
@@ -403,6 +408,10 @@ QToolButton#themetile:hover {{ border-color: {p.accent_dark}; color: {p.accent};
 QToolButton#themetile:checked {{ border-color: {p.accent}; color: {p.accent}; font-weight: bold; background: {p.selection}; }}
 QLineEdit#search {{ border-radius: 16px; padding: 6px 14px; }}
 QTableView {{ border-radius: 8px; }}
+QTreeView {{ border-radius: 8px; show-decoration-selected: 1; }}
+QTreeView::item {{ padding: 5px 2px; border: none; border-bottom: 1px solid {p.border}; border-right: 1px solid {p.border}; }}
+QTreeView::item:selected {{ background: {p.selection}; color: {p.text}; }}
+QTreeView::item:hover:!selected {{ background: {p.alt_row}; }}
 QTableView::item {{ padding: 2px 6px; border: none; }}
 QTableView::item:selected {{ background: {p.selection}; color: {p.text}; }}
 QTableView::indicator {{ border: 1px solid {p.muted}; background: {p.field}; border-radius: 3px; }}

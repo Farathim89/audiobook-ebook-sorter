@@ -6,12 +6,15 @@ import json
 import sqlite3
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 USER_AGENT = "Shelfkeeper/0.4 (+personal library tool)"
 CACHE_DAYS = 30
+RETRY_CODES = (500, 502, 503, 504)  # the server's hiccup, not a wrong ask
+RETRIES, RETRY_WAIT = 2, 1.5
 
 
 class Cache:
@@ -68,10 +71,18 @@ class Http:
             headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
             if body is not None:
                 headers["Content-Type"] = "application/json; charset=utf-8"
-            req = urllib.request.Request(url, data=body, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                for attempt in range(RETRIES + 1):
+                    req = urllib.request.Request(url, data=body, headers=headers)
+                    try:
+                        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                            data = json.loads(resp.read().decode("utf-8"))
+                        break
+                    except urllib.error.HTTPError as e:
+                        # 'service unavailable' now and then (Google Books often): the same ask works a moment later
+                        if e.code not in RETRY_CODES or attempt == RETRIES:
+                            raise
+                        time.sleep(RETRY_WAIT * (attempt + 1))
             except (ValueError, http.client.HTTPException) as e:
                 # not JSON / cut off mid-answer: the same as no answer for every caller (they catch OSError)
                 raise OSError(f"bad answer from {urllib.parse.urlsplit(url).netloc}: {type(e).__name__}") from e

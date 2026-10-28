@@ -24,6 +24,7 @@ from ..core.lookup import TLDS, Lookup, check_all
 from ..core.models import AUDIO, EBOOK, Series, fmt_index, link_other_series, series_key
 from ..portable import ui_settings
 from ...ui import theme  # the sorter's theme (the Checker had the same file)
+from ...ui.columns import resizable_columns
 
 log = logging.getLogger(__name__)
 FILTERS = [("All series", "all"), ("Missing books", "missing"), ("   🎧 Missing audiobooks", "missing_audio"),
@@ -63,6 +64,7 @@ class Worker(QRunnable):
 
 class MainWindow(QMainWindow):
     author_wanted = Signal(str)  # 'More by <author>': the sorter opens its Author page
+    totals_changed = Signal(str)  # '2119 books, 215 series ...': shown in the sorter's sidebar
 
     def __init__(self):
         super().__init__()
@@ -74,7 +76,8 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout(root)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
-        h.addWidget(self._sidebar())
+        self.side = self._sidebar()  # its filters + buttons; inside the sorter its own sidebar shows them instead
+        h.addWidget(self.side)
         main = QWidget()
         v = QVBoxLayout(main)
         v.setContentsMargins(12, 10, 12, 8)
@@ -214,11 +217,7 @@ class MainWindow(QMainWindow):
         t.setSelectionBehavior(QAbstractItemView.SelectRows)
         t.verticalHeader().setVisible(False)
         t.setWordWrap(False)
-        head = t.horizontalHeader()
-        head.setSectionResizeMode(QHeaderView.Interactive)
-        head.setSectionResizeMode(3, QHeaderView.Stretch)
-        for c, width in ((0, 110), (1, 380), (2, 50), (4, 170), (5, 90)):
-            t.setColumnWidth(c, width)
+        resizable_columns(t, "calendar_widths", {0: 110, 1: 380, 2: 50, 3: 320, 4: 170, 5: 90}, ui_settings)
         t.itemDoubleClicked.connect(lambda it: (u := self.cal.item(it.row(), 0).data(Qt.UserRole)) and webbrowser.open(u))
         return t
 
@@ -230,11 +229,7 @@ class MainWindow(QMainWindow):
         t.setSortingEnabled(True)
         t.verticalHeader().setVisible(False)
         t.setWordWrap(False)
-        head = t.horizontalHeader()
-        head.setSectionResizeMode(QHeaderView.Interactive)
-        head.setSectionResizeMode(0, QHeaderView.Stretch)
-        for c, width in ((1, 200), (2, 110), (3, 80), (4, 200), (5, 70)):
-            t.setColumnWidth(c, width)
+        resizable_columns(t, "alone_widths", {0: 400, 1: 200, 2: 110, 3: 80, 4: 200, 5: 70}, ui_settings)
         t.itemDoubleClicked.connect(self._open_alone)
         return t
 
@@ -335,11 +330,8 @@ class MainWindow(QMainWindow):
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
         t.setSelectionBehavior(QAbstractItemView.SelectRows)
         t.verticalHeader().setVisible(False)
-        t.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         t.setWordWrap(False)
-        t.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        for c in (0, 2, 3):
-            t.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        resizable_columns(t, "volume_widths", {0: 44, 1: 300, 2: 60, 3: 100}, ui_settings, stretch_last=True)
         t.itemDoubleClicked.connect(self._open_volume)
         t.itemSelectionChanged.connect(self._volume_cover)
         v.addWidget(t, 1)
@@ -484,6 +476,7 @@ class MainWindow(QMainWindow):
         checked = sum(1 for s in all_ if s.checked)
         self.totals.setText(f"{books} books, {len(all_)} series\n{checked} checked online\n"
                             f"{missing} missing · {ups} coming soon\nScanned {self.scanned[:16].replace('T', ' ')}")
+        self.totals_changed.emit(self.totals.text())
         self.status.setText(f"{self.table.rowCount()} series shown")
 
     def _selected_key(self) -> str | None:

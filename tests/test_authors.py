@@ -61,3 +61,59 @@ def test_romanizations_and_credits_are_the_same_author():
     assert same_author("Syougo Kinugasa", ["Shogo Kinugasa"])
     assert same_author(ME, ["Reki Kawahara - author", "abec"])
     assert not same_author(ME, ["abec"])
+
+
+def test_volumes_between_listed_ones_count_but_one_far_off_number_doesnt():
+    works = Works()
+    add_anilist(works, _staff(("Accel World", "NOVEL", None, "Story")))
+    add_books(works, [(f"Accel World, Vol. {n} (light Novel)", [ME], "2017", "") for n in (12, 14, 26)], ME, "openlibrary")
+    accel = next(w for w in works.sorted() if w.name == "Accel World")
+    assert accel.online("ln") == 26 and accel.missing("ln") == 26
+    assert all("(light" not in v.title for v in accel.volumes)
+    works = Works()
+    add_books(works, [(f"Tiny, Vol. {n}", [ME], "", "") for n in (1, 2, 3, 250)], ME, "google")
+    assert next(iter(works.by_key.values())).online("ebook") == 3
+
+
+def test_related_works_fold_under_their_main_series():
+    from app.authors.works import Work, parents
+    names = ["Sword Art Online", "Sword Art Online: Aincrad", "Sword Art Online Progressive",
+             "Sword Art Online Progressive Barcarolle of Froth", "Sword Art Onlines", "Accel World",
+             "Accel World / Dural: Magisa Garden", "The Isolator", "The Isolator, realization of absolute solitude"]
+    up = parents([Work(n) for n in names])
+    assert [names[up[i]] if up[i] is not None else None for i in range(len(names))] == [
+        None, "Sword Art Online", "Sword Art Online", "Sword Art Online Progressive", None, None, "Accel World",
+        None, "The Isolator"]
+
+
+def test_one_series_under_its_other_names_and_a_volume_audible_lists_without_series():
+    works = Works()
+    add_audible(works, [{"asin": "B5", "title": "Heroine? Saint? No, I'm an All-Works Maid (and Proud of It)!, Vol. 5",
+                         "language": "english", "authors": [{"name": ME}], "series": []},
+                        _audible("Heroine? Saint? No, I'm an All-Works Maid (And Proud of It)!, Vol. 1", 1,
+                                 "Heroine? Saint? No, I'm an All-Works Maid (And Proud of It)!")], ME)
+    assert len(works.by_key) == 1 and next(iter(works.by_key.values())).online("audio") == 5
+    works = Works()
+    add_anilist(works, {"staffMedia": {"edges": [{"staffRole": "Story", "node": {
+        "title": {"english": None, "romaji": "Saikyou no Shokugyou wa Yuusha demo Kenja demo Naku Kanteishi"},
+        "synonyms": ["The strongest job is apparently not a hero or a sage, but an appraiser"],
+        "format": "NOVEL", "volumes": None}}]}})
+    add_books(works, [("The strongest job is apparently not a hero or a sage, but an appraiser, Vol. 1", [ME], "", "")],
+              ME, "openlibrary")
+    assert [w.name for w in works.sorted()] == ["The strongest job is apparently not a hero or a sage, but an appraiser"]
+
+
+def test_spin_offs_that_contain_the_series_name_or_its_other_name_fold_under_it():
+    from app.authors.works import Work, parents
+    slime = Work("That Time I Got Reincarnated as a Slime", other_names=["Tensei Shitara Slime Datta Ken"])
+    names = ["The Slime Diaries: That Time I Got Reincarnated as a Slime", "Tensei Shitara Slime Datta Ken: Bangai-hen",
+             "Tenchura! That Time I Got Reincarnated as a Slime", "That Time I Got Reincarnated (Again!) as a Workaholic Slime"]
+    works = [slime] + [Work(n) for n in names]
+    up = parents(works)
+    assert [up[i] for i in range(1, 5)] == [0, 0, 0, None]
+
+
+def test_a_count_alone_lists_its_volumes():
+    from app.authors.works import Work
+    w = Work("Scarlet Bond", counts={"manga": 2}, kinds={"manga"})
+    assert w.numbers("manga") == {1.0, 2.0} and w.online("manga") == 2

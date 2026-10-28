@@ -126,16 +126,18 @@ class Lookup:
         # volume count yet (still running), so its book tab has volumes to show
         wants_google = self.settings.use_google and not s.total_hint and (
             ("ebook" in s.formats and not s.audible) or (s.kind == "light novel" and s.links.get("AniList")))
+        google_failed = False
         if wants_google and not self.google_busy:
             try:
                 self.google_volumes(s)
             except (OSError, ValueError, KeyError) as e:
+                google_failed = True
                 if "429" in str(e):
                     self.google_busy = True  # quietly: the next check asks again
                 else:
                     notes.append(f"Google: {e}")
-        if wants_google and self.google_busy and not s.others:
-            s.others = before  # Google said 'too many requests': keep what it told us last time
+        if wants_google and (self.google_busy or google_failed) and not s.others:
+            s.others = before  # Google didn't answer this time: keep what it told us last time
         if s.audible and not s.others and not s.total_hint and not s.key.endswith("|manga"):
             try:
                 self.openlibrary_books(s)  # which of Audible's volumes exist as books too
@@ -336,16 +338,27 @@ class Lookup:
 
     # -- Google Books --------------------------------------------------------------------------
     def google_volumes(self, s: Series) -> None:
-        # a plain search: Google finds nothing for intitle:"..." inauthor:"..." on many light novels
+        # plain searches: Google finds nothing for intitle:"..." inauthor:"..." on many light novels. The name with
+        # the author, and the name with its kind - 'Goblin Slayer Kumo Kagyu' finds only chapters, 'Goblin Slayer
+        # light novel' the volumes (Google gives 20 a search at most)
         name = re.sub(r"(?i)\s*\((?:manga|comic|light novel)\)$", "", s.name)
-        q = f"{name} {s.author or ''}".strip()
-        params = {"q": q, "maxResults": 40, "printType": "books", "langRestrict": "en"}
-        if self.settings.google_books_key:
-            params["key"] = self.settings.google_books_key
-        data = self.google.get_json("https://www.googleapis.com/books/v1/volumes", params)
+        queries = [f"{name} {s.author or ''}".strip()]
+        if s.kind in ("light novel", "manga"):
+            queries.append(f"{name} {s.kind}")
+        items, failed = [], None
+        for q in queries:
+            params = {"q": q, "maxResults": 40, "printType": "books"}  # no langRestrict: with it Google answers 503
+            if self.settings.google_books_key:
+                params["key"] = self.settings.google_books_key
+            try:
+                items += self.google.get_json("https://www.googleapis.com/books/v1/volumes", params).get("items") or []
+            except OSError as e:
+                failed = e
+        if failed is not None and not items:
+            raise failed  # no search answered: say so (and keep last time's volumes)
         want = _series_key_loose(s.name)
         found: dict[float, Volume] = {}
-        for it in data.get("items") or []:
+        for it in items:
             info = it.get("volumeInfo") or {}
             title = " ".join(x for x in (info.get("title"), info.get("subtitle")) if x)
             if not _series_key_loose(title).startswith(want):
