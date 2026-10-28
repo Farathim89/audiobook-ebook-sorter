@@ -95,11 +95,12 @@ def _comics_like_their_folder(books: list[Book]) -> None:
                 break
 
 
-def _doubled_pen_names(books: list[Book]) -> None:
-    """'Twoony Twoony' (a shop filled both name fields) is 'Twoony' when another book here says 'Twoony'.
-    Only then: 'Asato Asato' (86) is a real name written that way."""
+def _doubled_pen_names(books: list[Book], own_singles: set[str] = frozenset()) -> None:
+    """'Twoony Twoony' (a shop filled both name fields) is 'Twoony' when another book here says 'Twoony' -
+    or a book's own files did before the lookup (own_singles: all 4 'All the Dust That Falls' took Audible's
+    'zaifyr zaifyr'). Only then: 'Asato Asato' (86) is a real name written that way."""
     from ..readers.names import single_name  # noqa: PLC0415
-    singles = {fold(a) for b in books for a in b.meta.authors if " " not in a.strip()}
+    singles = {fold(a) for b in books for a in b.meta.authors if " " not in a.strip()} | set(own_singles)
     for b in books:
         if b.sources.get("authors") == "manual":
             continue
@@ -206,6 +207,7 @@ class OnlineLookup:
         todo = [b for b in books if self.wants_lookup(b) and b not in known]
         own_series = {id(b): b.meta.series for b in books}  # what the books' own files say, before the shops
         own_titles = {id(b): b.meta.title for b in books}
+        own_singles = {fold(a) for b in books for a in b.meta.authors if " " not in a.strip()}  # 'zaifyr'
         for b in books:
             if b not in todo:
                 b.looked_up = True  # nothing to ask for this one
@@ -229,7 +231,7 @@ class OnlineLookup:
         self._kind_from_author(books, self.manga_authors_in_library)
         _drop_credited(books)
         _latin_author_names(books)
-        _doubled_pen_names(books)
+        _doubled_pen_names(books, own_singles)
         _full_series_names(books)
         _keep_shared_series(books, own_series)
         _own_series_when_unnumbered(books, own_series, own_titles)

@@ -48,6 +48,9 @@ def _ratio(a: str, b: str) -> float:
 def title_score(want: str | None, cand: Candidate) -> float:
     w, title = norm_title(want), cand.meta.title or ""
     scores = [_ratio(w, norm_title(title))]
+    if subtitle := getattr(cand.meta, "subtitle", None):
+        # our tag 'All the Dust That Falls Two: An Isekai LitRPG Adventure' = the shop's title + subtitle
+        scores.append(_ratio(w, norm_title(f"{title}: {subtitle}")))
     if ":" in title:  # "7th Time Loop: The Villainess Enjoys..., Vol. 1" is "7th Time Loop"
         scores.append(min(_ratio(w, norm_title(title.split(":", 1)[0])), AUTO_TITLE))
     if cand.meta.series:
@@ -56,12 +59,15 @@ def title_score(want: str | None, cand: Candidate) -> float:
 
 
 def author_score(authors: list[str], narrators: list[str], cand: Candidate) -> float:
-    """Best name match. Rips often swap author and narrator tags, so a crossed match counts too."""
+    """Best name match. Rips often swap author and narrator tags, so a crossed match counts too.
+    A shop's 'zaifyr zaifyr' (a one-word pen name in both name fields) is our 'zaifyr'."""
+    from ..readers.names import single_name  # noqa: PLC0415
     if not authors and not narrators:
         return 0.5  # unknown: neither helps nor rules out
-    pairs = [(a, b) for a in authors for b in cand.meta.authors]
+    shop_authors = [n for a in cand.meta.authors for n in {a, single_name(a)}]
+    pairs = [(a, b) for a in authors for b in shop_authors]
     pairs += [(a, b) for a in authors for b in cand.meta.narrators]
-    pairs += [(a, b) for a in narrators for b in cand.meta.authors]
+    pairs += [(a, b) for a in narrators for b in shop_authors]
     return max((_ratio(fold(a), fold(b)) for a, b in pairs), default=0.0)
 
 

@@ -111,9 +111,22 @@ def _folder_title(book: Book, shared_head: bool = True) -> str:
     if m.series and m.series_index is not None and fold(title) == fold(series):
         # the title is just the series name ('Adachi and Shimamura: Short Stories', the first of them)
         return f"{folder_series(series)}, Vol. {format_index(m.series_index)}"
+    if m.series and m.series_index is not None and _word_number_after(title, series) == m.series_index:
+        # 'All the Dust That Falls Two' / '... Four' next to '..., Vol. 1' and 'All the Dust that Falls 3'
+        return f"{folder_series(series)}, Vol. {format_index(m.series_index)}"
     if m.series and title.startswith(m.series):
         title = folder_series(m.series) + title[len(m.series):]
     return title
+
+
+def _word_number_after(title: str, series: str) -> int | None:
+    """'All the Dust That Falls Two' with series 'All the Dust That Falls' -> 2 (a number word right after
+    the whole series name, and nothing else)."""
+    from ..readers.names import _NUMBER_WORDS  # noqa: PLC0415
+    if not series or not fold(title).startswith(fold(series)):
+        return None
+    rest = re.sub(r"(?i)^" + r"\W*".join(map(re.escape, series.split())), "", title.strip()).strip(" ,:-")
+    return _NUMBER_WORDS.get(rest.lower()) if rest else None
 
 
 @dataclass(eq=False)
