@@ -156,7 +156,9 @@ class AppTabs(QFrame):
             row.addWidget(b)
         row.addStretch(1)
         self._group.buttons()[0].setChecked(True)
-        self._group.idToggled.connect(lambda i, on: on and not self.signalsBlocked() and self.currentIndexChanged.emit(i))
+        # every click - also on the tab already shown: it leads back from Tools / Settings / History
+        # (idClicked: not when setCurrentIndex() marks the tab the window switched to)
+        self._group.idClicked.connect(self.currentIndexChanged.emit)
 
     def currentIndex(self) -> int:
         return self._group.checkedId()

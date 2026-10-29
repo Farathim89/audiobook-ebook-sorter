@@ -2,7 +2,8 @@
 moves smoothly by pixels - not a whole column / row at a time."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QHeaderView, QWidget
 
 
 def smooth_scrolling(root: QWidget) -> None:
@@ -30,10 +31,14 @@ def resizable_columns(view: QAbstractItemView, key: str, widths: dict[int, int],
         saved = []
     if len(saved) == head.count():
         for col, width in enumerate(saved):
-            if width > 0:
+            if width > 0 and not (stretch_last and col == head.count() - 1):  # that one: the room left
                 view.setColumnWidth(col, width)
-    head.sectionResized.connect(lambda *_: view.property("fitting") or settings().setValue(
-        key, [head.sectionSize(c) for c in range(head.count())]))  # your own widths only, not the page's fit
+
+    def resized(*_):
+        # your own drags only: not the page's fit, not Qt stretching the last column when the window resizes
+        if not view.property("fitting") and head.underMouse() and QApplication.mouseButtons() & Qt.LeftButton:
+            settings().setValue(key, [head.sectionSize(c) for c in range(head.count())])
+    head.sectionResized.connect(resized)
     smooth_scrolling(view)
     return len(saved) == head.count()
 

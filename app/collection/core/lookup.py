@@ -5,6 +5,7 @@
 Answers are cached for a week (providers.http)."""
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import re
 from difflib import SequenceMatcher
@@ -19,6 +20,11 @@ from ...core.text import fold  # the sorter's
 
 _PLACEHOLDER = "2200"  # Audible's date for listings that aren't for sale
 _VOL_RE = re.compile(r"(?i)(?:\bvol(?:ume)?\.?|\bbook|\bpart|#|,)\s*(\d+(?:\.\d+)?)\b|\s(\d{1,3})\s*$")
+
+
+# a shop's bundle ('86-EIGHTY-SIX Light Novel 12-Book Set Vol.1-12'): not one volume
+_BUNDLE = re.compile(r"(?i)\b(?:box(?:ed)?[ -]set|collection set|books? (?:collection|set)|\d+[ -]books? set)\b"
+                     r"|\bvol(?:ume)?s?\.?\s*\d+\s*[-–]\s*\d+")
 
 
 def _series_key_loose(name: str) -> str:
@@ -101,12 +107,20 @@ class Lookup:
         self.google = Http(cache, min_interval=1.2)
         self.openlib = Http(cache, min_interval=1.0)  # OpenLibrary: free, no key
         self.google_busy = False  # Google said 'too many requests': no more Google this round
+        self.google_partial = False  # the last google_volumes: one of its searches didn't answer
         tld = TLDS.get(settings.audible_region, "com")
         self.api = f"https://api.audible.{tld}/1.0/catalog/products"
         self.site = f"https://www.audible.{tld}"
 
     def check(self, s: Series) -> None:
-        """Fill the series' known volumes from every source that is on."""
+        """Fill the series' known volumes from every source that is on. On a copy, put in place in one step at
+        the end: a save meanwhile (the app closing mid-check) keeps the old answers, never half-new ones."""
+        t = copy.copy(s)
+        t.links = dict(s.links)
+        self._check(t)
+        s.__dict__.update(t.__dict__)
+
+    def _check(self, s: Series) -> None:
         notes = []
         before = dict(s.others)
         s.others = {}  # Google / OpenLibrary: asked again - a fresh answer replaces the old one
@@ -138,6 +152,9 @@ class Lookup:
                     notes.append(f"Google: {e}")
         if wants_google and (self.google_busy or google_failed) and not s.others:
             s.others = before  # Google didn't answer this time: keep what it told us last time
+        elif wants_google and self.google_partial:  # one of its searches didn't answer: keep last time's too
+            for k, v in before.items():
+                s.others.setdefault(k, v)
         if s.audible and not s.others and not s.total_hint and not s.key.endswith("|manga"):
             try:
                 self.openlibrary_books(s)  # which of Audible's volumes exist as books too
@@ -346,6 +363,7 @@ class Lookup:
         if s.kind in ("light novel", "manga"):
             queries.append(f"{name} {s.kind}")
         items, failed = [], None
+        self.google_partial = False
         for q in queries:
             params = {"q": q, "maxResults": 40, "printType": "books"}  # no langRestrict: with it Google answers 503
             if self.settings.google_books_key:
@@ -353,15 +371,20 @@ class Lookup:
             try:
                 items += self.google.get_json("https://www.googleapis.com/books/v1/volumes", params).get("items") or []
             except OSError as e:
+                if "429" in str(e):
+                    raise  # 'too many requests': no more Google this round (check() stops asking)
                 failed = e
         if failed is not None and not items:
             raise failed  # no search answered: say so (and keep last time's volumes)
+        self.google_partial = failed is not None
         want = _series_key_loose(s.name)
         found: dict[float, Volume] = {}
         for it in items:
             info = it.get("volumeInfo") or {}
+            if (info.get("language") or "en").lower() not in ("en", "eng"):
+                continue  # another language's edition (no langRestrict: with it Google answers 503)
             title = " ".join(x for x in (info.get("title"), info.get("subtitle")) if x)
-            if not _series_key_loose(title).startswith(want):
+            if not _series_key_loose(title).startswith(want) or _BUNDLE.search(title):
                 continue
             # the manga's search finds the light novels too ('86--EIGHTY-SIX, Vol. 4 (light novel)') - and back
             manga = bool(re.search(r"(?i)\bmanga\b|\bcomic\b|graphic novel", title))

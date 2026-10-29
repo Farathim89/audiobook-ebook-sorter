@@ -364,7 +364,8 @@ class AuthorPage(QWidget):
         p = theme._current  # noqa: SLF001
         mine = w.mine.get(kind, set())
         rows_out, seen, sources = [], set(), set()
-        for v in sorted((v for v in w.volumes if v.kind == kind), key=lambda v: (v.number is None, v.number or 0)):
+        shown = [v for v in w.volumes if v.kind == kind and v.number is not None] + w.loose(kind)
+        for v in sorted(shown, key=lambda v: (v.number is None, v.number or 0)):
             if v.number is not None and v.number in seen:
                 continue
             seen.add(v.number)
@@ -372,8 +373,8 @@ class AuthorPage(QWidget):
             rows_out.append((v.number, v.title, v.number in mine if v.number is not None else None, v.date,
                              v.source, v.url))
         known = {n for n in seen if n is not None}
-        for n in sorted(w.numbers(kind) - known):  # between listed volumes: they exist, no source names them
-            rows_out.append((n, f"{w.name}, Vol. {n:g}", n in mine, "", "between", ""))
+        for n in sorted(w.numbers(kind) - known):  # between listed volumes (or yours): no source names them
+            rows_out.append((n, f"{w.name}, Vol. {n:g}", n in mine, "", "yours" if n in mine else "between", ""))
         rows_out.sort(key=lambda r: (r[0] is None, r[0] or 0))
         known |= w.numbers(kind)
         if w.counts.get(kind) and not known:
@@ -383,7 +384,8 @@ class AuthorPage(QWidget):
             rows_out.append((n if n else None, "in your library", True, "", "", ""))
         have, miss = w.have(kind), w.missing(kind)
         names = {"audible": "Audible", "anilist": "AniList", "google": "Google Books", "openlibrary": "Open Library",
-                 "between": "no source names this one - its number lies within the series' known volumes"}
+                 "between": "no source names this one - its number lies within the series' known volumes",
+                 "yours": "in your library - no source lists it (yet)"}
         sources.discard("between")
         text = f"You have {have}" + (f" · {miss} missing" if miss else (" · all of them" if have else ""))
         if sources:

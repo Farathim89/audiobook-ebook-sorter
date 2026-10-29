@@ -91,11 +91,15 @@ def name_key(name: str | None) -> str:
     'Eiichirou' = 'Eiichiro', 'Ōta' = 'Oota' = 'Ota'."""
     import unicodedata  # noqa: PLC0415
     s = unicodedata.normalize("NFKD", name or "")
-    s = fold("".join(c for c in s if not unicodedata.combining(c)))
-    for old, new in (("sy", "sh"), ("ty", "ch"), ("zy", "j"), ("jy", "j"), ("ou", "o"), ("oo", "o"),
-                     ("uu", "u"), ("aa", "a"), ("ii", "i"), ("ee", "e")):
-        s = s.replace(old, new)
-    return s
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    out = []
+    for word in re.split(r"[\s.\-_]+", s):  # word by word: 'Fujino Oomori' = 'Fujino Omori', not 'Fujino Mori'
+        w = fold(word)
+        for old, new in (("sy", "sh"), ("ty", "ch"), ("zy", "j"), ("jy", "j"), ("ou", "o"), ("oo", "o"),
+                         ("uu", "u"), ("aa", "a"), ("ii", "i"), ("ee", "e")):
+            w = w.replace(old, new)
+        out.append(w)
+    return "".join(out)
 
 
 def same_text(a: str | None, b: str | None) -> bool:

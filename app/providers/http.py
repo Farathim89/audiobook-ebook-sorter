@@ -82,6 +82,7 @@ class Http:
                         # 'service unavailable' now and then (Google Books often): the same ask works a moment later
                         if e.code not in RETRY_CODES or attempt == RETRIES:
                             raise
+                        e.close()
                         time.sleep(RETRY_WAIT * (attempt + 1))
             except (ValueError, http.client.HTTPException) as e:
                 # not JSON / cut off mid-answer: the same as no answer for every caller (they catch OSError)

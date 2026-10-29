@@ -18,9 +18,18 @@ KINDS = ("audio", "ln", "manga", "ebook")
 KIND_LABELS = {"audio": "🎧 Audiobook", "ln": "📖 Light novel", "manga": "🗯 Manga", "ebook": "📘 Ebook"}
 _ROLE_OK = re.compile(r"(?i)\b(story|original creator|original work|original|creator|author)\b")  # wrote it
 _ART_ONLY = re.compile(r"(?i)^\s*(art|art assistant|original character design|illustration|character design)\s*$")
-_CJK = re.compile("[぀-ヿ㐀-鿿가-힯]")  # kana, kanji/hanzi, hangul
-_LN_TAG = re.compile(r"(?i)\s*[\(\[](?:light novel|novel)[\)\]]")  # 'Accel World, Vol. 16 (light Novel)'
-_KIND_TAG = re.compile(r"(?i)\s*[\(\[](?:manga|comic|light novel|novel|graphic novel)[\)\]]\s*$")
+_CJK = re.compile("[぀-ヿ㐀-鿿가-힯฀-๿Ѐ-ӿͰ-Ͽ؀-ۿ֐-׿ऀ-ॿ]")  # not Latin script
+# one chapter sold on its own ('Goblin Slayer, Chapter 8 (manga)', '... (ch. 13-18)'): not a volume, not a work
+_CHAPTER = re.compile(r"(?i)\bchapters?\s*\d|\bch\.\s*\d|\bepisode\s*\d")
+# a shop's bundle ('Classroom of the Elite (Light Novel) Series, 6 Books Collection Set'): not a work of its own
+_BUNDLE = re.compile(r"(?i)\b(?:box(?:ed)?[ -]set|collection set|books? (?:collection|set)|\d+[ -]books? set"
+                     r"|(?:manga|novel|light novel) set)\b|\bvol(?:ume)?s?\.?\s*\d+\s*[-–]\s*\d+")  # 'Vol 17-22'
+_KIND_TAG = re.compile(r"(?i)\s*[\(\[](?:manga|comic|light novel|novel|graphic novel)[\)\]][\s.]*$")
+# anywhere: Google's 'Accel World, Vol. 1 (light novel)' + its subtitle is 'Accel World, Vol. 1 (light novel): Kuroyukihime's
+# Return' - the tag in the middle hides the volume number
+_ANY_KIND_TAG = re.compile(r"(?i)\s*[\(\[](?:manga|comic|light novel|novel|graphic novel)[\)\]]")
+# 'Sword Art Online 10: Alicization Running' - a number after a series name we know, then the volume's title
+_NUMBER_TITLE = re.compile(r"^(?P<s>.*?\D)(?:\s+#?|\.)(?P<n>\d{1,3}(?:\.\d+)?)\s*[:\-–—]\s+\S.*$")
 
 
 @dataclass
@@ -53,28 +62,56 @@ class Work:
         lists 'Accel World, Vol. 12, 14, 16 ... 26': volumes 1 to 26 exist. (One far-off number - a box set,
         a misread year - doesn't stretch the series: 1, 2, 3, 250 is 1-3.)"""
         listed = sorted({v.number for v in self.volumes if v.kind == kind and v.number is not None})
+        # a volume you have exists, listed or not - once a source knows the series in this kind at all
+        known = listed or self.counts.get(kind) or any(v.kind == kind for v in self.volumes)
+        yours = {n for n in self.mine.get(kind, ()) if n} if known else set()
         if len(listed) >= 2 and listed[-1] > listed[-2] * 2 + 10:
             listed = listed[:-1]
         if not listed:  # only a count (AniList / MangaDex): volumes 1 .. count
-            return {float(n) for n in range(1, self.counts.get(kind, 0) + 1)}
+            return {float(n) for n in range(1, self.counts.get(kind, 0) + 1)} | yours
         top = int(listed[-1])
         if self.counts.get(kind) and self.status == "FINISHED":
             # a finished series' own count (AniList) wins: a stray 'Vol. 5' in a book shop doesn't add volumes
             top = min(top, self.counts[kind])
             listed = [n for n in listed if n <= top]
-        return set(listed) | {float(n) for n in range(1, top + 1)}
+        return set(listed) | {float(n) for n in range(1, top + 1)} | yours
+
+    def loose(self, kind: str) -> list[Volume]:
+        """The unnumbered volumes of this kind worth a row: next to numbered ones, a book titled just the series'
+        name ('Accel World', 'The Isolator, realization of absolute solitude') is one of them again (volume 1)."""
+        loose = [v for v in self.volumes if v.kind == kind and v.number is None]
+        if not any(v.kind == kind and v.number is not None for v in self.volumes):
+            return loose
+        names = [_bare(n) for n in [self.name, *self.other_names] if n]
+        first_listed = any(v.kind == kind and v.number == 1 for v in self.volumes)
+
+        def repeats_name(title: str) -> bool:
+            t = _bare(title)
+            if t in names:
+                return True  # 'Accel World', 'In Another World with My Smartphone:'
+            # 'The Isolator, realization of absolute solitude' is volume 1 - unless volume 1 is listed: then it
+            # is a book of its own ('Mushoku Tensei: Jobless Reincarnation: Recollections')
+            return not first_listed and any(t.startswith(n + " ") for n in names)
+        return [v for v in loose if not repeats_name(v.title)]
 
     def online(self, kind: str) -> int:
         """How many volumes of this kind the sources know of."""
         numbers = self.numbers(kind)
-        loose = sum(1 for v in self.volumes if v.kind == kind and v.number is None)
-        return max(len(numbers) or loose, self.counts.get(kind, 0))
+        return max(len(numbers) or len(self.loose(kind)), self.counts.get(kind, 0))
 
     def have(self, kind: str) -> int:
         return len(self.mine.get(kind, ()))
 
     def missing(self, kind: str) -> int:
         return max(0, self.online(kind) - self.have(kind))
+
+
+def _bare(name: str) -> str:
+    """For comparing a title with a series name: folded, without 'The' / 'A' and kind words ('The Reprise of the
+    Spear Hero: Light Novel' = 'Reprise of the Spear Hero')."""
+    t = " ".join(re.sub(r"[\W_]+", " ", _ANY_KIND_TAG.sub("", name or "")).casefold().split())  # words kept
+    t = re.sub(r"\s*\b(?:light novel|manga|novel)$", "", t)
+    return re.sub(r"^(?:the|an?) ", "", t)
 
 
 def work_key(name: str) -> str:
@@ -109,7 +146,7 @@ class Works:
     def get(self, name: str) -> Work:
         key = self._key(name)
         if key not in self.by_key:
-            self.by_key[key] = Work(_KIND_TAG.sub("", name).strip())
+            self.by_key[key] = Work(" ".join(_ANY_KIND_TAG.sub("", name).split()))  # no '(Light Novel)' inside
         return self.by_key[key]
 
     def alias(self, names: list[str], name: str) -> Work:
@@ -239,18 +276,46 @@ def add_books(works: Works, books: list[tuple[str, list[str], str, str]], author
     """Google Books / OpenLibrary titles (title, authors, date, url): 'Accel World, Vol. 3' is volume 3 of Accel
     World; a light novel or manga the sources already know counts there, anything else is an ebook."""
     for title, names, date, url in books:
-        if not title or not same_author(author, names) or _CJK.search(title):
+        if not title or not same_author(author, names) or _CJK.search(title) or _CHAPTER.search(title)                 or _BUNDLE.search(title):
             continue  # 'Sword Art Online刀劍神域 (1)': another language's edition
         manga = bool(re.search(r"(?i)\((?:manga|comic)\)|\bmanga\b", title))
-        vol = parse_volume(_KIND_TAG.sub("", title), trailing_number=True)
-        name, number = (vol[0], vol[1]) if vol else (title, None)
+        # no kind tags, no publisher's line ('(The Yoru Sumino Collection Book 5)'), no dot a tag left behind
+        clean = re.sub(r"\s*\([^()]*\bcollection\b[^()]*\)\s*$", "", _ANY_KIND_TAG.sub("", title), flags=re.I)
+        clean = clean.rstrip(" .") if clean != title else clean
+        # Google's title + subtitle 'High School DXD, Vol. 15' + 'Volume 15': the number once
+        clean = re.sub(r"(?i)(\bvol(?:ume)?\.?\s*(\d+)\b.*?),\s*vol(?:ume)?\.?\s*\2\s*$", r"\1", clean)
+        vol = parse_volume(clean, trailing_number=True)
+        if not vol and (m := _NUMBER_TITLE.match(clean)) and works.find(m["s"]) is not None:
+            vol = (m["s"].strip(" ,:"), float(m["n"]))  # never 'Fahrenheit 451: ...' - no series 'Fahrenheit'
+        name, number = (vol[0], vol[1]) if vol else (" ".join(clean.split()), None)
         w = works.get(name)
-        kind = "manga" if manga else ("ln" if "ln" in w.kinds else "ebook")
-        if any(v.kind == kind and v.number == number and (number is not None or fold(v.title) == fold(title))
+        # the kind AniList knows it as: One Piece's 'One Piece, Vol. 7' is a manga without saying so
+        kind = "manga" if manga or ("manga" in w.kinds and "ln" not in w.kinds) else (
+            "ln" if "ln" in w.kinds else "ebook")
+        if kind == "ln" and not manga and "manga" in w.kinds and number is not None                 and number > w.counts.get("ln", 999) and number <= w.counts.get("manga", 0):
+            kind = "manga"  # both exist: 'Bungo Stray Dogs, Vol. 17' is past the light novels - the manga's
+        if any(v.kind == kind and v.number == number and (number is not None or _bare(v.title) == _bare(title))
                for v in w.volumes):
             continue  # the same volume from another edition / source
         w.kinds.add(kind)
-        w.volumes.append(Volume(number, _LN_TAG.sub("", title).strip(), kind, source, date[:10], url))
+        w.volumes.append(Volume(number, _ANY_KIND_TAG.sub("", title).strip(), kind, source, date[:10], url))
+
+
+def drop_subtitles(works: Works) -> None:
+    """A book shop's lone 'The Red Storm Princess' is 'Accel World, Vol. 2: The Red Storm Princess' - a volume
+    already listed under its series, not a work of its own (only for such shop-only works: nothing of yours,
+    no count, no other source)."""
+    subtitles = {}
+    for w in works.by_key.values():
+        for v in w.volumes:
+            if v.number is not None and ":" in v.title:
+                sub = _bare(v.title.split(":", 1)[1])
+                if len(sub) >= 8:
+                    subtitles.setdefault(sub, w)
+    for key, w in list(works.by_key.items()):
+        shop_only = not any(w.mine.values()) and not w.counts and not w.links and             all(v.number is None and v.source in ("google", "openlibrary") for v in w.volumes)
+        if shop_only and subtitles.get(_bare(w.name)) not in (None, w):
+            del works.by_key[key]
 
 
 def add_yours(works: Works, abs_books: list, author: str, only_known: bool = False) -> None:

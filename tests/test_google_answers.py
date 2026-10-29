@@ -84,3 +84,60 @@ def test_the_collection_also_asks_with_the_kind_and_one_failed_search_is_not_all
     s = Series("g", "Goblin Slayer", "Kumo Kagyu", "light novel")
     lk.google_volumes(s)
     assert asked == ["Goblin Slayer Kumo Kagyu", "Goblin Slayer light novel"] and sorted(s.others) == [2.0, 14.0]
+
+
+def test_the_authors_page_keeps_english_editions_only():
+    from app.authors.sources import AuthorLookup
+    from app.authors.works import Works
+
+    class Fake:
+        def get_json(self, url, params):
+            return {"items": [{"id": "1", "volumeInfo": {"title": "One Piece, Vol. 7", "authors": ["Eiichiro Oda"],
+                                                          "language": "en"}},
+                              {"id": "2", "volumeInfo": {"title": "One Piece - Édition originale", "authors":
+                                                          ["Eiichiro Oda"], "language": "fr"}}]}
+    lk = AuthorLookup.__new__(AuthorLookup)
+    lk.books_http, lk.google_key = Fake(), ""
+    works = Works()
+    lk._google(works, "Eiichiro Oda")
+    assert [w.name for w in works.sorted()] == ["One Piece"]
+
+
+def test_the_collection_skips_other_languages_and_bundles(tmp_path):
+    class Fake:
+        def get_json(self, url, params):
+            return {"items": [{"volumeInfo": {"title": "86--EIGHTY-SIX, Vol. 2 (light novel)", "language": "en"}},
+                              {"volumeInfo": {"title": "86-EIGHTY-SIX Light Novel 12-Book Set Vol.1-12"}},
+                              {"volumeInfo": {"title": "86 - Eighty Six, Vol. 3", "language": "fr"}}]}
+    lk = Lookup(Settings(), tmp_path)
+    lk.google = Fake()
+    s = Series("e", "86--EIGHTY-SIX", "Asato Asato", "light novel")
+    lk.google_volumes(s)
+    assert sorted(s.others) == [2.0]
+
+
+def test_a_save_during_a_check_sees_the_old_answers_and_a_partial_google_keeps_them(tmp_path):
+    settings = Settings()
+    settings.use_audible = settings.use_anilist = False
+    lk = Lookup(settings, tmp_path)
+    s = Series("b", "Black Summoner", "Doufu Mayoi", "light novel")
+    s.owned = [Owned("Black Summoner, Vol. 1", ["Doufu Mayoi"], "Black Summoner", 1.0, EBOOK, "light novel", "Folder")]
+    s.others = {2.0: Volume(2.0, "Black Summoner: Volume 2", source="google")}
+    seen = []
+
+    class Fake:
+        def get_json(self, url, params):
+            seen.append(sorted(s.others))  # what a save right now would write
+            if len(seen) == 1:
+                raise OSError("HTTP Error 503: Service Unavailable")
+            return {"items": [{"volumeInfo": {"title": "Black Summoner, Vol. 5"}}]}
+    lk.google = Fake()
+    lk.check(s)
+    assert seen == [[2.0], [2.0]] and sorted(s.others) == [2.0, 5.0]
+
+    class Busy:
+        def get_json(self, url, params):
+            raise OSError("HTTP Error 429: Too Many Requests")
+    lk.google = Busy()
+    lk.check(s)
+    assert lk.google_busy and sorted(s.others) == [2.0, 5.0]

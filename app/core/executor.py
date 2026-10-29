@@ -7,10 +7,12 @@ Safety rules:
 """
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import threading
 import shutil
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -23,7 +25,7 @@ from . import m4b
 from .covers import extract_cover
 from .history import Journal, Processed, keep_old_tags
 from .infolog import InfoLog, what_was_read
-from .leftovers import done_dir, drop_empty_parents, leftovers, recycle_bin_on, to_recycle_bin
+from .leftovers import LEFTOVER_EXTS, done_dir, drop_empty_parents, leftovers, recycle_bin_on, to_recycle_bin
 from .library import remove_empty_dirs
 from .models import Book, BookType, Status
 from .planner import Move, Plan, clean_name
@@ -183,7 +185,7 @@ class Executor:
                     self._step(f"re-encoding xHE-AAC -> AAC: {mv.src.name} (slow)")
                     self._ensure_dir(mv.dst.parent, journal)
                     m4b.reencode_aac(mv.src, mv.dst, self._cancelled)
-                    journal.write(op="create", dst=str(mv.dst), size=mv.dst.stat().st_size)
+                    journal.write(op="create", dst=str(mv.dst), size=mv.dst.stat().st_size, made_from=[str(mv.src)])
                     if problem := self._play_test(mv.dst, m4b.duration(mv.src)):
                         os.remove(mv.dst)
                         self._notes.append(f"the xHE-AAC fix of {mv.src.name} failed the play test ({problem}) "
@@ -296,7 +298,7 @@ class Executor:
             self._ensure_dir(out.parent, journal)
             m4b.convert(files, out, chapters, title, total, cancelled=self._cancelled,
                         on_progress=lambda f: self._step(f"joining {len(files)} files into one m4b {f:.0%}"))
-        journal.write(op="create", dst=str(out), size=out.stat().st_size)
+        journal.write(op="create", dst=str(out), size=out.stat().st_size, made_from=[str(f) for f in files])
         cover = extract_cover(book)
         image = cover[0] if cover else None
         if image is None and book.meta.cover_url:
@@ -341,12 +343,19 @@ class Executor:
         size = src.stat().st_size
         self._ensure_dir(dst.parent, journal)
         if self.mode == "move" and _same_drive(src, dst):
-            os.rename(src, dst)  # refuses to replace an existing file on Windows
-            journal.write(op="move", src=str(src), dst=str(dst), size=size)
-            return
+            try:
+                os.rename(src, dst)  # refuses to replace an existing file on Windows
+                journal.write(op="move", src=str(src), dst=str(dst), size=size)
+                return
+            except OSError as e:
+                # the same letter, another volume (a mounted folder, another network share): copy instead
+                if getattr(e, "winerror", None) != 17 and e.errno != errno.EXDEV:
+                    raise
         tmp = dst.with_name(dst.name + ".partial")
         try:
             shutil.copy2(src, tmp)
+            if not os.access(tmp, os.W_OK):  # a read-only original: its copy not (else Undo can't remove it)
+                os.chmod(tmp, stat.S_IREAD | stat.S_IWRITE)
             if tmp.stat().st_size != size:
                 raise OSError(f"copy is incomplete: {src}")
             os.rename(tmp, dst)
@@ -388,12 +397,17 @@ class Executor:
             if f.is_file():
                 rel = f.relative_to(book.source_root) if book.source_root in f.parents else Path(f.name)
                 self._to_done(f, dest / rel, journal, may_remove)
-        rest = leftovers(folder, book.source_root)
+        if book.folder is None:  # no folder of its own ('Frank Herbert\Dune.epub'): only files named like it
+            stem = book.main_file.stem.casefold()
+            rest = sorted(f for f in folder.iterdir() if f.is_file() and f.stem.casefold() == stem
+                          and f.suffix.lower() in LEFTOVER_EXTS) if folder.is_dir() else []
+        else:
+            rest = leftovers(folder, book.source_root)
         owned = getattr(self, "_owned", {})
         if any(owned.get(os.path.normcase(str(f)), book) is not book for f in rest):
             return  # another book of this run still lives here (its cover.jpg, book info.txt...): not ours
-        for f in rest:
-            self._to_done(f, dest / f.relative_to(book.source_root), journal)
+        for f in rest:  # never deleted for good (a drive without a Recycle Bin): to Done then
+            self._to_done(f, dest / f.relative_to(book.source_root), journal, may_remove=recycle_bin_on(f))
         if folder != book.source_root and folder.is_dir():
             remove_empty_dirs(folder)
         drop_empty_parents(folder.parent, book.source_root)

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import threading
 import time
 from dataclasses import dataclass, field
@@ -22,12 +23,17 @@ class Journal:
         self.run_id = time.strftime("%Y%m%d-%H%M%S")
         self.path = history_dir / f"{self.run_id}.jsonl"
         n = 1
-        # an undone run is renamed '<id>.undone.jsonl': its id stays taken (info log, saved tags)
-        while self.path.exists() or self.path.with_name(f"{self.path.stem}.undone.jsonl").exists():
+        while True:
+            # an undone run is renamed '<id>.undone.jsonl': its id stays taken (info log, saved tags)
+            if not self.path.with_name(f"{self.path.stem}.undone.jsonl").exists():
+                try:  # 'x': never two runs in one file (the window and a scheduled --auto run, same second)
+                    self._fh = open(self.path, "x", encoding="utf-8")
+                    break
+                except FileExistsError:
+                    pass
             n += 1
             self.path = history_dir / f"{self.run_id}-{n}.jsonl"
         self.run_id = self.path.stem
-        self._fh = open(self.path, "a", encoding="utf-8")
         self._lock = threading.Lock()  # several books are sorted at once
         self._book = threading.local()  # the steps of the book this thread is sorting (begin_book)
         self.write(op="run", mode=mode, time=time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -55,8 +61,10 @@ class Journal:
         steps = self.end_book()
         result = UndoResult()
         _reverse(steps, result)
-        for e in steps:
-            self.write(op="rolled-back", step=e.get("op"), src=e.get("src"), dst=e.get("dst") or e.get("path"))
+        failed = {id(e) for e in result.failed_steps}
+        for e in steps:  # only what was put back: a step that failed stays for Undo to do
+            if id(e) not in failed:
+                self.write(op="rolled-back", step=e.get("op"), src=e.get("src"), dst=e.get("dst") or e.get("path"))
         return result.skipped
 
     def close(self) -> None:
@@ -89,6 +97,7 @@ def list_runs(history_dir: Path) -> list[RunInfo]:
 class UndoResult:
     restored: int = 0
     skipped: list[str] = field(default_factory=list)
+    failed_steps: list[dict] = field(default_factory=list, repr=False)  # the journal entries that failed
 
 
 def undo(run: RunInfo, processed: Processed | None = None) -> UndoResult:
@@ -124,8 +133,8 @@ def _reverse(entries: list[dict], result: UndoResult, processed: Processed | Non
     # an original BOOK file was deleted ('Keep old copies in Done' off): the new book files made from it are
     # the only copies left and are kept - a deleted cover.jpg / .nfo doesn't count, nor are sidecars kept
     from .models import BOOK_EXTS  # noqa: PLC0415
-    deleted_originals = any(e.get("op") == "delete" and Path(e.get("src", "")).suffix.lower() in BOOK_EXTS
-                            for e in entries)
+    deleted = {os.path.normcase(e.get("src", "")) for e in entries
+               if e.get("op") == "delete" and Path(e.get("src", "")).suffix.lower() in BOOK_EXTS}
     failed = 0
     for e in reversed(entries):
         op = e.get("op")
@@ -154,16 +163,30 @@ def _reverse(entries: list[dict], result: UndoResult, processed: Processed | Non
                 where = "in the Recycle Bin" if e.get("how") == "recycle bin" else "deleted for good"
                 result.skipped.append(f"{where}, can't bring back: {e.get('src')}")
                 continue
+            if op == "copy" and dst.exists() and not Path(e["src"]).exists():
+                # the original is gone since (Incoming cleaned up): this copy is the only one - it goes back to
+                # where the original was, never deleted
+                src = Path(e["src"])
+                src.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(dst), str(src))
+                result.skipped.append(f"its original was gone - the copy went back there: {src}")
+                result.restored += 1
+                if processed is not None:
+                    processed.discard(src, e.get("size"))
+                continue
             if op in ("copy", "create"):
                 if not dst.exists():
                     continue
-                if deleted_originals and op == "create" and dst.suffix.lower() in BOOK_EXTS:
+                made = e.get("made_from")  # the originals it was made from (older journals: not written)
+                if op == "create" and dst.suffix.lower() in BOOK_EXTS and (
+                        any(os.path.normcase(m) in deleted for m in made) if made is not None else deleted):
                     result.skipped.append(f"kept - its original was deleted when sorting: {dst}")
                     continue
                 size = final_size.get(e["dst"], e.get("size"))
                 if size is not None and dst.stat().st_size not in (size, e.get("size")):  # rewritten + put back
                     result.skipped.append(f"changed since, kept: {dst}")
                     continue
+                _writable(dst)  # a copy of a read-only original is read-only too
                 os.remove(dst)
                 result.restored += 1
             elif op == "move":
@@ -189,8 +212,18 @@ def _reverse(entries: list[dict], result: UndoResult, processed: Processed | Non
                 processed.discard(Path(e["src"]), e.get("size"))
         except OSError as err:
             result.skipped.append(f"{dst or e.get('path')}: {err}")
+            result.failed_steps.append(e)
             failed += 1
     return failed
+
+
+def _writable(path: Path) -> None:
+    """Clear the read-only flag (a file the app made: its copy of a read-only original)."""
+    try:
+        if not os.access(path, os.W_OK):
+            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    except OSError:
+        pass
 
 
 def same_place(a: Path, b: Path) -> bool:
@@ -261,15 +294,19 @@ class Processed:
         """Forget that a book was sorted (it shows up again on the next scan)."""
         for f in book.files:
             try:
-                self.keys.discard(self.key(f))
-                self._removed.add(self.key(f))
+                k = self.key(f)
             except OSError:
-                pass
+                continue
+            with self._lock:  # save() may be going through the keys right now
+                self.keys.discard(k)
+                self._removed.add(k)
 
     def discard(self, path: Path, size: int | None) -> None:
         if size is not None:
-            self.keys.discard(self.key(path, size))
-            self._removed.add(self.key(path, size))
+            k = self.key(path, size)
+            with self._lock:
+                self.keys.discard(k)
+                self._removed.add(k)
 
     def save(self) -> None:
         """Merged with the file as it is now: the window and a scheduled '--auto' run never undo each other's

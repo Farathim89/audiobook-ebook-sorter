@@ -111,6 +111,11 @@ def _swap_if_reversed(meta: Metadata, dirs: list[str]) -> Metadata:
     """Calibre names files 'Title - Author': if the 'title' is a folder above, it's the author."""
     if meta.title and len(meta.authors) == 1 and any(same_text(meta.title, d) for d in dirs):
         meta.title, meta.authors = meta.authors[0], [meta.title]
+    elif meta.title and not meta.authors and meta.series and meta.series_index is not None             and any(same_text(meta.title, d) for d in dirs):
+        # 'Ray Bradbury\Fahrenheit 451 - Ray Bradbury.epub' read as series 'Fahrenheit' #451, title 'Ray
+        # Bradbury': the 'title' is the author folder - the name was 'Title - Author'
+        meta.title, meta.authors = f"{meta.series} {format_index(meta.series_index)}", [meta.title]
+        meta.series, meta.series_index = None, None
     return meta
 
 

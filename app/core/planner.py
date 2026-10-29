@@ -119,7 +119,7 @@ def _folder_title(book: Book, shared_head: bool = True) -> str:
     return title
 
 
-_VOL_TITLE_RE = re.compile(r"(?i)(?:vol(?:ume)?\.?|book|part)\s*\d")
+_VOL_TITLE_RE = re.compile(r"(?i)\b(?:vol(?:ume)?\.?|book|part)\s*\d")
 
 
 def _plain_series(series: str) -> str:
@@ -426,15 +426,40 @@ class Planner:
                 plan.duplicates.setdefault(other, set()).add(book)
             else:
                 by_target[key] = book
+        # one book's folder inside another's: 'Dune' (no series) -> Frank Herbert\Dune, 'Dune Messiah' (Dune #2)
+        # -> Frank Herbert\Dune\2 - Dune Messiah
+        folders = {os.path.normcase(str(t)): b for b, t in plan.targets.items() if b not in plan.review}
+        for book, target in plan.targets.items():
+            if book in plan.review:
+                continue
+            for up in target.parents:
+                other = folders.get(os.path.normcase(str(up)))
+                if other is not None and other is not book:
+                    plan.add_problem(book, f"its folder would be inside the folder of {_where(other)}")
+                    plan.add_problem(other, f"another book's folder would be inside it: {_where(book)}")
+                    break
         sources = {os.path.normcase(str(mv.src)) for mv in plan.moves}
         for book, target in plan.targets.items():
             if book in plan.review:
                 continue
+            if book.meta.series and book.meta.series_index is not None and target.parent.is_dir():
+                try:  # the series folder is a stand-alone book's folder, sorted before
+                    loose = [p for p in target.parent.iterdir() if p.is_file() and p.suffix.lower() in BOOK_EXTS
+                             and os.path.normcase(str(p)) not in sources]
+                except OSError:
+                    loose = []
+                if loose:
+                    plan.add_problem(book, f"its series folder '{target.parent.name}' is a book's own folder "
+                                           f"({loose[0].name}) - check the series / title")
             try:
                 present = [p for p in target.iterdir() if os.path.normcase(str(p)) not in sources]
             except OSError:
                 continue
-            if present:  # e.g. sorted earlier by beets/the PowerShell sorter with other file names
+            if present and all(p.is_dir() for p in present) and any(
+                    re.match(r"^\d+(?:\.\d+)? - ", p.name) for p in present):
+                plan.add_problem(book, f"its folder '{target.name}' is a series folder (holds {present[0].name})"
+                                       " - check the series / title")
+            elif present:  # e.g. sorted earlier by beets/the PowerShell sorter with other file names
                 plan.add_problem(book, f"already in the library: {target.name}")
         for book, target in plan.targets.items():  # same series number already sorted under another title
             m = book.meta

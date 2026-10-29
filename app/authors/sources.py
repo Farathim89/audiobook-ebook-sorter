@@ -8,7 +8,7 @@ from typing import Callable
 from ..core.abs_index import AbsIndex
 from ..providers.audible import TLDS
 from ..providers.http import Cache, Http
-from .works import Works, add_anilist, add_audible, add_books, add_yours, same_author
+from .works import Works, add_anilist, add_audible, add_books, add_yours, drop_subtitles, same_author
 
 log = logging.getLogger(__name__)
 ANILIST = "https://graphql.anilist.co"
@@ -46,6 +46,7 @@ class AuthorLookup:
             except OSError as e:
                 notes.append(f"{name} didn't answer ({e})")
                 log.warning("%s author lookup failed: %s", name, e)
+        drop_subtitles(works)
         progress(len(steps), len(steps) + 1, "Your library…")
         add_yours(works, AbsIndex.load(self.folders).books, author)
         return works, notes
@@ -92,6 +93,8 @@ class AuthorLookup:
                     continue
                 seen.add(it.get("id"))
                 v = it.get("volumeInfo") or {}
+                if (v.get("language") or "en").lower() not in ("en", "eng"):
+                    continue  # 'One Piece édition originale' - without langRestrict (503) Google answers in all
                 title = v.get("title") or ""
                 if v.get("subtitle") and not title.endswith(v["subtitle"]):
                     title = f"{title}: {v['subtitle']}" if "vol" not in v["subtitle"].lower() else f"{title}, {v['subtitle']}"

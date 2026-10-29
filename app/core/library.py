@@ -130,6 +130,19 @@ class LibraryEditor:
             return ""
         return m4b.play_test(path, expected or None, full=self.folders.play_test == "full")
 
+    def _swap_in(self, new: Path, path: Path) -> None:
+        """The re-encoded file takes the original's place, the original is parked. Journaled from the start:
+        if the original can't be moved (open in a player, Audiobookshelf streaming it) the new file goes
+        again - never a second audio file left next to the book that Undo doesn't know."""
+        self.journal.write(op="create", dst=str(new), size=new.stat().st_size)
+        try:
+            self.park(path, path.parent)
+        except BaseException:
+            new.unlink(missing_ok=True)
+            raise
+        new.rename(path)
+        self.journal.write(op="rename", src=str(new), dst=str(path))
+
     def fix_xhe_aac(self, path: Path, cancelled: Callable[[], bool] = lambda: False) -> None:
         """Replace an xHE-AAC file (ABS can't read it) by a plain-AAC one; the original is parked."""
         if self.folders.is_protected(path):
@@ -139,9 +152,7 @@ class LibraryEditor:
         if problem := self.play_test(new, m4b.duration(path)):
             new.unlink()
             raise OSError(f"the AAC copy failed the play test ({problem}) - removed it, the original stays")
-        self.park(path, path.parent)
-        new.rename(path)
-        self.journal.write(op="create", dst=str(path), size=path.stat().st_size)
+        self._swap_in(new, path)
         self.park_abs_metadata(path.parent)
 
 
@@ -158,9 +169,7 @@ class LibraryEditor:
         if problem:
             new.unlink()
             raise OSError(f"the repaired copy failed the play test ({problem}) - removed it, the original stays")
-        self.park(path, path.parent)
-        new.rename(path)
-        self.journal.write(op="create", dst=str(path), size=path.stat().st_size)
+        self._swap_in(new, path)
         self.park_abs_metadata(path.parent)
 
 

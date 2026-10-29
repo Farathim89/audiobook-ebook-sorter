@@ -117,3 +117,115 @@ def test_a_count_alone_lists_its_volumes():
     from app.authors.works import Work
     w = Work("Scarlet Bond", counts={"manga": 2}, kinds={"manga"})
     assert w.numbers("manga") == {1.0, 2.0} and w.online("manga") == 2
+
+
+def test_google_volume_titles_with_the_kind_in_the_middle_and_chapters():
+    works = Works()
+    add_anilist(works, _staff(("Accel World", "NOVEL", None, "Story"), ("Sword Art Online", "NOVEL", None, "Story")))
+    add_books(works, [("Accel World, Vol. 1 (light novel): Kuroyukihime's Return", [ME], "2014", ""),
+                      ("Accel World, Vol. 12 (Light Novel): The Red Crest", [ME], "2018", ""),
+                      ("Sword Art Online 10 (light novel): Alicization Running", [ME], "2017", ""),
+                      ("Accel World, Chapter 8 (manga)", [ME], "2019", ""),
+                      ("Fahrenheit 451: A Novel", [ME], "1953", "")], ME, "google")
+    names = sorted(w.name for w in works.sorted())
+    assert names == ["Accel World", "Fahrenheit 451: A Novel", "Sword Art Online"]  # no volume / chapter as a work
+    accel = works.find("Accel World")
+    assert sorted(v.number for v in accel.volumes) == [1.0, 12.0] and accel.online("ln") == 12
+    assert works.find("Sword Art Online").volumes[0].number == 10.0
+
+
+def test_a_volume_you_have_exists_and_a_book_named_like_the_series_is_no_extra_volume():
+    works = Works()
+    add_audible(works, [_audible(f"Sword Art Online {n}", n) for n in range(1, 22)], ME)
+    add_yours(works, [_abs(f"Sword Art Online {n}", "Sword Art Online", float(n)) for n in range(1, 23)], ME)
+    sao = works.find("Sword Art Online")
+    assert (sao.have("audio"), sao.online("audio"), sao.missing("audio")) == (22, 22, 0)  # Audible lacks your 22
+    add_books(works, [("The Isolator, realization of absolute solitude", [ME], "2014", ""),
+                      ("The Isolator, Vol. 2", [ME], "2015", ""), ("The Isolator, Vol. 3", [ME], "2016", ""),
+                      ("The Isolator", [ME], "2014", "")], ME, "google")
+    iso = works.find("The Isolator")
+    assert iso.loose("ebook") == [] and iso.online("ebook") == 3  # 1-3, not 3 + 2 unnumbered
+
+
+def test_two_spellings_of_one_author_across_the_space():
+    assert same_author("Fujino Omori", ["Fujino Oomori"]) and same_author("Fujino Oomori", ["Fujino Ōmori"])
+    assert not same_author("Fujino Omori", ["Fujino Mori"])
+
+
+def test_a_manga_by_its_known_kind_bundles_out_and_a_spin_off_book_stays():
+    oda = "Eiichiro Oda"
+    works = Works()
+    add_anilist(works, _staff(("One Piece", "MANGA", None, "Story & Art")))
+    add_books(works, [("One Piece, Vol. 7", [oda], "2005", ""),
+                      ("One Piece Box Set 1: East Blue and Baroque Works", [oda], "2013", "")], oda, "google")
+    assert [(v.kind, v.number) for v in works.find("One Piece").volumes] == [("manga", 7.0)]
+    assert len(works.by_key) == 1
+    works = Works()
+    mt = "Mushoku Tensei: Jobless Reincarnation"
+    add_audible(works, [_audible(f"{mt}, Vol. {n}", n, mt) for n in (1, 2)] +
+                [{**_audible(f"{mt}: Recollections (Light Novel)", 0, mt), "series": [{"title": mt, "asin": "MT"}]}], ME)
+    w = works.find(mt)
+    assert [v.title for v in w.loose("audio")] == [f"{mt}: Recollections (Light Novel)"]
+
+
+def test_an_unnumbered_audiobook_named_like_its_series_is_one_of_its_volumes():
+    works = Works()
+    sh = "Rising of the Shield Hero"
+    add_audible(works, [_audible(f"{sh}, Vol. {n}", n, sh) for n in (2, 3)] +
+                [{**_audible("The Rising of the Shield Hero: Light Novel", 0, sh), "series": [{"title": sh}]}], ME)
+    w = works.find(sh)
+    assert w.loose("audio") == [] and w.online("audio") == 3
+
+
+def test_other_scripts_a_dotted_number_and_tags_left_in_names():
+    aa = "Asato Asato"
+    works = Works()
+    add_anilist(works, _staff(("86--EIGHTY-SIX Alter", "NOVEL", None, "Story")))
+    add_books(works, [("86--EIGHTY-SIX Alter.1 (light novel): The Reaper's Occasional Adolescence", [aa], "2024", ""),
+                      ("OVER LORD เล่ม 3", [aa], "2019", ""),
+                      ("REBORN AS A SPACE MERCENARY (manga).", [aa], "2023", ""),
+                      ("I am Blue, in Pain, and Fragile (Light Novel) (The Yoru Sumino Collection Book 5)", [aa], "", "")],
+              aa, "google")
+    assert sorted(w.name for w in works.sorted()) == ["86--EIGHTY-SIX Alter", "I am Blue, in Pain, and Fragile",
+                                                      "REBORN AS A SPACE MERCENARY"]
+    assert works.find("86--EIGHTY-SIX Alter").volumes[0].number == 1.0
+
+
+def test_a_volume_past_the_light_novels_is_the_mangas():
+    ka = "Kafka Asagiri"
+    works = Works()
+    add_anilist(works, _staff(("Bungo Stray Dogs", "NOVEL", 4, "Story"), ("Bungo Stray Dogs", "MANGA", 25, "Story")))
+    add_books(works, [("Bungo Stray Dogs, Vol. 3", [ka], "", ""), ("Bungo Stray Dogs, Vol. 17", [ka], "", "")], ka, "google")
+    assert sorted((v.kind, v.number) for v in works.find("Bungo Stray Dogs").volumes) == [("ln", 3.0), ("manga", 17.0)]
+
+
+def test_a_lone_volume_subtitle_from_a_book_shop_is_no_work():
+    from app.authors.works import drop_subtitles
+    works = Works()
+    add_anilist(works, _staff(("Accel World", "NOVEL", None, "Story")))
+    add_books(works, [("Accel World, Vol. 2 (light novel): The Red Storm Princess", [ME], "2014", ""),
+                      ("The red storm princess", [ME], "2014", ""), ("Demons' Crest", [ME], "2023", "")], ME,
+              "openlibrary")
+    drop_subtitles(works)
+    assert sorted(w.name for w in works.sorted()) == ["Accel World", "Demons' Crest"]
+
+
+def test_yours_count_next_to_an_unnumbered_listing_and_a_number_given_twice():
+    jd = "Jeanne DuPrau"
+    works = Works()
+    add_books(works, [("The City of Ember", [jd], "2003", ""), ("City of Ember", [jd], "2003", "")], jd, "google")
+    add_yours(works, [AbsBook(f"Ember {n}", "EBooks", f"x/{n}", f"Ember {n}", [jd], [], [("The City of Ember", float(n))],
+                              "", "ebook", False) for n in range(1, 5)], jd)
+    ember = works.find("The City of Ember")
+    assert (ember.have("ebook"), ember.online("ebook")) == (4, 4)
+    add_anilist(works, _staff(("High School DxD", "NOVEL", 25, "Story")))
+    add_books(works, [("High School DXD, Vol. 15, Volume 15", [jd], "", "")], jd, "google")
+    assert works.find("High School DxD").volumes[0].number == 15.0
+
+
+def test_a_set_of_volumes_is_no_work():
+    ka = "Kafka Asagiri"
+    works = Works()
+    add_books(works, [("Bungo Stray Dogs Manga Set Vol 17-22", [ka], "", ""), ("Bungo Stray Dogs, Vol. 2", [ka], "", "")],
+              ka, "openlibrary")
+    assert [w.name for w in works.sorted()] == ["Bungo Stray Dogs"]
